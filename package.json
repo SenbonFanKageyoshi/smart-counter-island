@@ -1,0 +1,73 @@
+{
+  "name": "smart-counter-island",
+  "productName": "SmartCounterIsland",
+  "version": "1.2.0",
+  "description": "Smart Counter Island —— 教室希沃大屏高考/中考倒数日：iOS 灵动岛风格悬浮窗（Windows 10/11）",
+  "main": "src/main/main.js",
+  "author": "Smart Counter Island",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "electron . --test",
+    "smoke": "electron . --smoke",
+    "shot": "electron . --shot",
+    "icons": "node scripts/gen-icons.js",
+    "pack": "electron-builder --win dir",
+    "dist": "electron-builder --win dir && node scripts/rcedit-exe.js && electron-builder --win --prepackaged release/win-unpacked"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.smartcounter.island",
+    "productName": "SmartCounterIsland",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/win-probe.ps1",
+        "to": "win-probe.ps1"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Smart Counter Island",
+      "artifactName": "SmartCounterIsland-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "SmartCounterIsland-${version}-portable.exe"
+    }
+  }
+}

@@ -1,0 +1,300 @@
+/* ===== Smart Counter Island · 灵动岛 ===== */
+:root {
+  --glass-gap: 60px; /* 毛玻璃层超出的采样余量 */
+  --ink: #ffffff;          /* 文字主色（由背景亮度自动切换） */
+  --ink-soft: rgba(255, 255, 255, 0.72);
+  --accent: #4f7cff;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* ===== 文字颜色自适应（背景亮度 → 深/浅字） ===== */
+body[data-ink="dark"] { --ink: #10203c; --ink-soft: rgba(16, 32, 60, 0.68); }
+body[data-ink="light"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.75); }
+/* 无效果模式：黑底白字 */
+body[data-glass="off"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
+
+/* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） ===== */
+.glass {
+  position: absolute;
+  left: calc(-1 * var(--glass-gap));
+  top: calc(-1 * var(--glass-gap));
+  right: calc(-1 * var(--glass-gap));
+  bottom: calc(-1 * var(--glass-gap));
+  background-repeat: no-repeat;
+  filter: blur(30px) saturate(1.65) brightness(1.05);
+  opacity: 0.92;
+  display: none;
+  pointer-events: none;
+}
+
+/* ===== 灵动岛本体 ===== */
+#pill {
+  position: absolute;
+  left: 8px; top: 8px; right: 8px; bottom: 8px;
+  border-radius: 999px; /* 胶囊形（苹果灵动岛）：两侧半圆 */
+  overflow: hidden;
+  transition: border-radius 0.24s ease, opacity 0.25s ease, box-shadow 0.24s ease;
+  touch-action: none;
+  -webkit-user-drag: none;
+}
+
+body[data-state="strip"]    #pill { border-radius: 13px; }
+body[data-state="expanded"] #pill { border-radius: 999px; }
+body[data-state="zoom"]     #pill { border-radius: 42px; }
+body[data-state="notify"]   #pill { border-radius: 24px; }
+
+/* —— 模拟玻璃（fake）：渐变 + 噪点，文字色随亮度 —— */
+body[data-glass="fake"] #pill {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.50),
+    rgba(255, 255, 255, 0.10) 34%,
+    rgba(150, 190, 255, 0.18) 68%,
+    rgba(255, 255, 255, 0.30)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.30),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 14px 40px rgba(8, 16, 40, 0.30),
+    0 4px 12px rgba(8, 16, 40, 0.22);
+}
+/* 深色背景上用深色玻璃底会看不清 → 自动调深底 */
+body[data-glass="fake"][data-ink="light"] #pill {
+  background: linear-gradient(160deg, rgba(20, 30, 55, 0.72), rgba(20, 30, 55, 0.45));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 14px 40px rgba(8, 16, 40, 0.35),
+    0 4px 12px rgba(8, 16, 40, 0.25);
+}
+
+/* —— 真实玻璃（capture）：极淡着色，模糊层显示背景 —— */
+body[data-glass="capture"] #pill {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.04) 45%, rgba(255, 255, 255, 0.10));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    0 14px 40px rgba(8, 16, 40, 0.28),
+    0 4px 12px rgba(8, 16, 40, 0.18);
+}
+
+/* —— 无效果（off）：强制黑底白字；背景几乎全黑时加细白边。
+   黑底形态不使用外部投影与大内阴影：投影/内阴影超出圆角命中区域会被 Win32
+   硬切，产生沿区域边缘的"黑边/不规则边界"，故只用 1px 细描边（视觉层次足够） —— */
+body[data-glass="off"] #pill {
+  background: rgba(12, 16, 24, 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+}
+body[data-glass="off"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 0 0 1.5px rgba(255, 255, 255, 0.75),
+    0 0 0 4px rgba(255, 255, 255, 0.18);
+}
+
+/* —— 细条（默认形态）：黑底白字胶囊（无外部投影/大内阴影防黑边）；
+   可选 data-strip="glass"：跟随玻璃效果（可自定义） —— */
+body[data-state="strip"][data-strip="black"] #pill {
+  background: rgba(12, 16, 24, 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+}
+
+/* —— 系统通知：黑底白字弹窗（只含标题+正文）；免打扰按钮独立在弹窗下方 —— */
+body[data-state="notify"] #pill {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  bottom: auto;
+  /* 弹窗高度 = 窗口内容 - 上下 PAD(16) - 顶部边距8 - 间隙6 - 按钮24 - 底部边距8；
+     与渲染器测量公式保持一致（改了 CSS 需同步 island.js measureNotify） */
+  height: calc(100% - 62px);
+  background: rgba(12, 16, 24, 0.95);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+/* —— 免打扰至下课按钮：独立小胶囊，显示在消息弹窗下方（仅通知形态） —— */
+#dnd-bar {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 8px;
+  height: 24px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 4;
+}
+body[data-state="notify"] #dnd-bar { display: flex; }
+#dnd-bar .n-btn {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(12, 16, 24, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  color: #ffffff;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 0 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+#dnd-bar .n-btn:hover { background: rgba(255, 255, 255, 0.16); }
+#dnd-bar .n-hint { font-size: 11px; line-height: 24px; color: rgba(255, 255, 255, 0.42); white-space: nowrap; }
+
+/* —— 颗粒噪点 —— */
+#noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.08;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='140' height='140' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+
+/* ===== 内容（字体清晰化） ===== */
+#content {
+  position: absolute;
+  inset: 0;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
+}
+
+.empty { font-size: 14px; color: var(--ink-soft); }
+
+/* —— 细条 strip（黑底白字） —— */
+.s-row { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #ffffff; }
+.s-emoji { font-size: 13px; }
+.s-num { font-weight: 800; font-size: 14px; color: #ffffff; }
+.s-unit { color: rgba(255, 255, 255, 0.75); }
+
+/* —— 放大版灵动岛 expanded（胶囊形） —— */
+.e-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  white-space: nowrap;
+  padding: 0 10px;
+}
+.e-emoji { font-size: 19px; transform: translateY(2px); }
+.e-name {
+  font-size: 16px;
+  font-weight: 700;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.e-num {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.e-unit { font-size: 14px; font-weight: 700; color: var(--ink-soft); }
+.e-time {
+  margin-left: auto;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* —— 倒计时窗口 zoom（正方形 = 屏幕高 1/4；事件名在上方，中部突出天数；
+       字号由渲染器按窗口高度设置 CSS 变量） —— */
+.z-wrap { width: 100%; height: 100%; padding: 10px 22px 48px; display: flex; flex-direction: column; }
+.z-head { display: flex; align-items: center; gap: 8px; font-size: var(--z-head, 22px); }
+.z-emoji { font-size: var(--z-emoji, 32px); }
+.z-label { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.z-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 0; }
+.z-row1 { display: flex; align-items: baseline; gap: 12px; }
+.z-row2 { display: flex; align-items: center; }
+.z-num {
+  font-size: var(--z-num, 120px);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.z-unit { font-size: var(--z-unit, 34px); font-weight: 700; }
+.z-time { font-size: var(--z-time, 30px); font-weight: 700; letter-spacing: 2px; white-space: nowrap; }
+.z-time .sep { color: var(--ink-soft); font-weight: 600; }
+
+/* ===== 操作按钮（仅最大窗口显示，底部居中） ===== */
+#buttons {
+  position: absolute;
+  bottom: 10px;
+  left: 0; right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 5;
+}
+body[data-state="zoom"] #buttons { opacity: 1; pointer-events: auto; }
+
+.ib {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.ib:hover { background: rgba(255, 255, 255, 0.5); transform: scale(1.08); }
+.ib:active { transform: scale(0.94); }
+.ib.up { font-size: 11px; }
+
+/* ===== 系统通知弹窗（黑底白字；只含标题+正文，正文最多 2 行） =====
+   免打扰按钮在 #dnd-bar（弹窗下方独立胶囊），见上方。行高固定 px，与渲染器测量一致。 */
+.n-wrap {
+  width: 100%; height: 100%;
+  padding: 12px 16px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.n-title {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 24px;   /* 固定行高，与渲染器测量一致 */
+  height: 24px;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.n-body {
+  font-size: 15px;
+  line-height: 22px;   /* 固定行高 */
+  margin-top: 5px;
+  max-height: 44px;    /* 最多 2 行，超出截断 */
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.85);
+  word-break: break-word;
+}

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Smart Counter Island · 配置</title>
+<link rel="stylesheet" href="config.css">
+</head>
+<body>
+<div id="errbox" class="errbox" hidden></div>
+<header>
+  <div class="logo">⏳</div>
+  <div class="title">
+    <h1>Smart Counter Island</h1>
+    <p id="ver">配置</p>
+  </div>
+  <div id="toast" class="toast">已保存</div>
+  <button id="btn-close" class="btn close-btn" title="关闭">✕ 关闭</button>
+</header>
+
+<nav id="tabs">
+  <button class="tab active" data-tab="events">倒计时事件</button>
+  <button class="tab" data-tab="display">显示效果</button>
+  <button class="tab" data-tab="smart">智能行为</button>
+  <button class="tab" data-tab="schedule">时间表</button>
+  <button class="tab" data-tab="about">关于</button>
+</nav>
+
+<main>
+  <!-- ============ 事件 ============ -->
+  <section id="tab-events" class="tabpage active">
+    <div class="toolbar">
+      <button id="btn-add-event" class="btn primary">＋ 添加事件</button>
+    </div>
+    <div id="event-list" class="event-list"></div>
+  </section>
+
+  <!-- ============ 显示 ============ -->
+  <section id="tab-display" class="tabpage">
+    <div class="field">
+      <label>玻璃效果（liquid glass）</label>
+      <select id="glassMode">
+        <option value="auto">自动（截屏真实模糊，失败自动回退）</option>
+        <option value="capture">真实模糊（截屏毛玻璃）</option>
+        <option value="fake">模拟玻璃（纯 CSS，最省资源）</option>
+        <option value="off">关闭（黑底白字，文字自动对比）</option>
+      </select>
+      <p class="desc" id="glassModeDesc">真实模糊每 1.6 秒截屏一次并高斯模糊（已排除小岛自身）；「关闭」= 黑底白字+自动白边，且不弹出倒计时窗口。</p>
+    </div>
+
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="classical"> 文言文显示（如：天→日、还有→尚有）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="darkMode"> 暗色模式（配置窗口深色主题）</label>
+    </div>
+
+    <h3 class="group-title">三种状态窗口的位置（各自独立）</h3>
+    <div class="field">
+      <label>灵动岛（默认形态：平时以小条展示，操作时收起）</label>
+      <div class="pos-row">
+        <select id="pos-strip-mode">
+          <option value="top-center">顶部居中</option>
+          <option value="top-left">顶部居左</option>
+          <option value="top-right">顶部居右</option>
+          <option value="custom">自定义坐标</option>
+        </select>
+        <span class="pos-xy"><span>X</span><input type="number" id="pos-strip-x" step="1"></span>
+        <span class="pos-xy"><span>Y</span><input type="number" id="pos-strip-y" step="1"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>横幅（无操作时展开：事件名+天数+时分秒）</label>
+      <div class="pos-row">
+        <select id="pos-expanded-mode">
+          <option value="top-center">顶部居中</option>
+          <option value="top-left">顶部居左</option>
+          <option value="top-right">顶部居右</option>
+          <option value="custom">自定义坐标</option>
+        </select>
+        <span class="pos-xy"><span>X</span><input type="number" id="pos-expanded-x" step="1"></span>
+        <span class="pos-xy"><span>Y</span><input type="number" id="pos-expanded-y" step="1"></span>
+      </div>
+    </div>
+    <div class="field">
+      <label>倒计时窗口（放大展示 + 底部操作按钮）</label>
+      <div class="pos-row">
+        <select id="pos-zoom-mode">
+          <option value="top-center">顶部居中</option>
+          <option value="top-left">顶部居左</option>
+          <option value="top-right">顶部居右</option>
+          <option value="custom">自定义坐标</option>
+        </select>
+        <span class="pos-xy"><span>X</span><input type="number" id="pos-zoom-x" step="1"></span>
+        <span class="pos-xy"><span>Y</span><input type="number" id="pos-zoom-y" step="1"></span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>所在显示器</label>
+      <select id="display">
+        <option value="cursor">跟随鼠标/触摸所在屏幕</option>
+        <option value="primary">主屏幕</option>
+        <option value="index">指定屏幕</option>
+      </select>
+    </div>
+    <div class="field" id="display-index-wrap" hidden>
+      <label>指定屏幕序号（0 为主屏）</label>
+      <input type="number" id="displayIndex" min="0" max="8" step="1">
+    </div>
+    <div class="field">
+      <label>透明度</label>
+      <div class="opacity-row">
+        <span>灵动岛</span><input type="range" id="opStrip" min="0" max="100" step="1">
+        <span>横幅</span><input type="range" id="opExpanded" min="0" max="100" step="1">
+        <span>倒计时窗口</span><input type="range" id="opZoom" min="0" max="100" step="1">
+      </div>
+      <p class="desc">灵动岛透明度设为 0 时完全隐身（不拦截触摸）。</p>
+    </div>
+    <div class="field">
+      <label>灵动岛样式</label>
+      <select id="stripStyle">
+        <option value="black">黑底白字（无效果，默认）</option>
+        <option value="glass">跟随玻璃效果</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="alwaysOnTop"> 始终置顶（全屏应用上方）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="showSeconds"> 横幅/倒计时窗口显示 时:分:秒</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="showPast"> 显示已过期的倒计时</label>
+    </div>
+  </section>
+
+  <!-- ============ 智能 ============ -->
+  <section id="tab-smart" class="tabpage">
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="smartEnabled"> 启用智能行为（隐藏/透明度/放大）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="notifyEnabled"> 接管系统通知（QQ/微信等弹窗时小岛展开显示）</label>
+      <p class="desc">新通知弹出时小岛展开显示标题与内容，滑动即可收起；连续通知可一键「免打扰至下课」。</p>
+    </div>
+    <div class="field">
+      <label>通知显示时长（秒）</label>
+      <input type="number" id="notifyShowSec" min="2" max="60" step="1">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="hideOnFullscreen"> 全屏授课/全屏视频时收成灵动岛并鼠标穿透</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="hideOnMaximized"> 有窗口最大化时保持灵动岛（不展开遮挡）</label>
+    </div>
+    <div class="field">
+      <label>无操作多少秒后展开为横幅</label>
+      <input type="number" id="expandIdleSec" min="0" max="120" step="1">
+      <p class="desc">默认窗口为横幅：无操作达到秒数后展开；有操作（移动鼠标/触摸）时收成灵动岛；全屏状态下始终维持灵动岛并鼠标穿透。</p>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="zoomEnabled"> 允许倒计时窗口（按住向下拖 / 菜单放大）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="cycleEnabled"> 倒计时窗口时轮播多个事件</label>
+    </div>
+    <div class="field">
+      <label>轮播间隔（秒）</label>
+      <input type="number" id="cycleSec" min="2" max="120" step="1">
+    </div>
+    <div class="field">
+      <label>手动模式（也可用托盘菜单 / 小岛右键）</label>
+      <div class="radio-row">
+        <label><input type="radio" name="manualMode" value="auto"> 自动</label>
+        <label><input type="radio" name="manualMode" value="pinned"> 固定显示</label>
+        <label><input type="radio" name="manualMode" value="hidden"> 隐藏成灵动岛</label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 时间表 ============ -->
+  <section id="tab-schedule" class="tabpage">
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="scheduleEnabled"> 启用时间表（用于「免打扰至下课」）</label>
+      <p class="desc">只需每天的上下课时间（无课程名）；休息周/非课时免打扰按 45 分钟兜底。</p>
+    </div>
+    <div class="field">
+      <label>几周一休（0 = 每周相同；N = N 周一个循环，第 N 周为休息周，可少排课）</label>
+      <input type="number" id="restEveryWeeks" min="0" max="8" step="1">
+    </div>
+    <div id="schedule-list"></div>
+  </section>
+
+  <!-- ============ 关于 ============ -->
+  <section id="tab-about" class="tabpage">
+    <div class="about-box">
+      <div class="about-logo">⏳</div>
+      <h2>Smart Counter Island</h2>
+      <p id="about-ver"></p>
+      <ul>
+        <li>单击小岛：展开/收起 · 双击：打开本窗口 · 按住上下拖：放大/缩小</li>
+        <li>系统通知弹出时：滑动收起 · 「免打扰至下课」按钮</li>
+        <li>托盘图标：单击 显示/隐藏 · 双击 打开本窗口 · 右键 菜单</li>
+      </ul>
+      <p class="small">Windows 10 / 11 · 无需安装任何运行库</p>
+    </div>
+  </section>
+</main>
+
+<!-- 事件编辑弹层 -->
+<div id="editor-mask" class="mask" hidden>
+  <div id="editor" class="editor">
+    <h3 id="editor-title">添加事件</h3>
+    <div class="field"><label>名称</label><input type="text" id="ev-name" placeholder="如：高考"></div>
+    <div class="field"><label>目标时间</label><input type="datetime-local" id="ev-date"></div>
+    <div class="field"><label>图标（emoji）</label><input type="text" id="ev-emoji" placeholder="🎓" maxlength="8"></div>
+    <div class="field"><label>强调色</label><input type="color" id="ev-color" value="#4f7cff"></div>
+    <div class="field"><label class="inline"><input type="checkbox" id="ev-enabled" checked> 启用</label></div>
+    <div class="editor-actions">
+      <button id="btn-ev-cancel" class="btn">取消</button>
+      <button id="btn-ev-save" class="btn primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物
+release/
+dist/
+build/rcedit-x64.exe
+
+# 测试/截图输出
+shots/
+src/shots/
+*.log
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

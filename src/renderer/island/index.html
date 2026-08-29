@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Smart Counter Island</title>
+<link rel="stylesheet" href="island.css">
+</head>
+<body data-state="strip" data-glass="fake" data-ink="light">
+  <div id="glass" class="glass"></div>
+  <div id="pill">
+    <div id="noise"></div>
+    <div id="content"></div>
+    <div id="buttons">
+      <button class="ib" data-act="pin" title="固定/自动">📌</button>
+      <button class="ib" data-act="config" title="配置">⚙</button>
+      <button class="ib" data-act="menu" title="菜单">⋯</button>
+      <button class="ib up" data-act="collapse" title="收起">▲</button>
+    </div>
+  </div>
+  <!-- 免打扰按钮：独立在消息弹窗下方，仅通知形态显示；收起通知时随状态一并消失 -->
+  <div id="dnd-bar">
+    <button class="n-btn" data-act="dnd">🔕 免打扰至下课</button>
+    <span class="n-hint">滑动收起</span>
+  </div>
+<script src="island.js"></script>
+</body>
+</html>
