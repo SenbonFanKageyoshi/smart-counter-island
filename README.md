@@ -29,7 +29,7 @@
 
 ## 🚀 快速开始（开发运行）
 
-需要 Node.js 18+（本机已验证 Node 24）。
+需要 Node.js 18+。
 
 ```powershell
 npm install
