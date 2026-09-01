@@ -10,7 +10,7 @@ const TEST_MODE =
   process.argv.includes('--test') || process.argv.includes('--shot') || process.argv.includes('--smoke');
 // 中性快照：无遮挡、光标远离、最后输入时间很近（= 有操作）→ 新逻辑下有操作 → 细条，
 // 自动 tick(350ms) 稳定落在细条，不干扰断言
-const NEUTRAL_LAST = { ok: true, vis: true, rect: null, pid: 4, cx: -9999, cy: -9999, li: 999999900, tick: 1000000000 };
+const NEUTRAL_LAST = { ok: true, vis: true, rect: null, pid: 4, cx: -9999, cy: -9999, li: 999999900, tick: 1000000000, fgClass: 'Sci_Neutral' };
 
 /** 圆角区域命令文件（探针子进程轮询此文件执行 SetWindowRgn） */
 const REGION_FILE = () => path.join(os.tmpdir(), 'sci-region-cmd.txt');

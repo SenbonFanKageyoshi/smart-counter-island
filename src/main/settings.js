@@ -61,14 +61,16 @@ const DEFAULTS = {
     classical: false,
     // 配置窗口暗色模式
     darkMode: false,
+    // 开机自启
+    autoStart: false,
   },
   smart: {
     enabled: true,          // 总开关（智能隐藏/透明度/放大）
     hideOnFullscreen: true, // 全屏授课时自动收成细条
     hideOnMaximized: true,  // 前台窗口最大化时保持细条（不展开遮挡）
-    expandIdleSec: 4,       // 无操作多少秒后变为放大版（默认窗口）
-    zoomIdleSec: 12,        // （保留字段，兼容旧配置）
-    zoomEnabled: true,      // 允许最大窗口（手动/拖拽）
+    expandIdleSec: 4,       // 无操作多少秒后展开为横幅（默认窗口）
+    zoomIdleSec: 15,        // 无操作多少秒后自动弹出大屏（0 = 不自动；非全屏/非最大化时）
+    zoomEnabled: true,      // 允许大屏（手动/拖拽/自动）
     cycleEnabled: false,    // 放大时轮播多个事件
     cycleSec: 6,
     // 系统通知接管
@@ -89,6 +91,7 @@ const DEFAULTS = {
   manual: {
     mode: 'auto', // 'auto' | 'pinned'(固定显示) | 'hidden'(强制隐藏成细条)
   },
+  tasks: [], // 计划任务：{ id, type:'shutdown'|'boot'|'command'|'remind', time:'HH:MM', days:'daily'|'once'|[0-6], command, message, enabled }
 };
 
 let cache = null;

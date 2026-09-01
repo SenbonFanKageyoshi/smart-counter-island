@@ -66,6 +66,7 @@ async function init() {
   // 显示设置
   $('#glassMode').value = S.ui.glassMode;
   $('#stripStyle').value = S.ui.stripStyle === 'glass' ? 'glass' : 'black';
+  $('#darkMode').checked = !!S.ui.darkMode;
   applyDarkMode(S.ui.darkMode);
   $('#display').value = S.ui.display;
   $('#displayIndex').value = S.ui.displayIndex ?? 0;
@@ -96,9 +97,9 @@ async function init() {
   $('#smartEnabled').checked = !!S.smart.enabled;
   $('#notifyEnabled').checked = S.smart.notifyEnabled !== false;
   $('#notifyShowSec').value = S.smart.notifyShowSec ?? 8;
-  $('#hideOnFullscreen').checked = !!S.smart.hideOnFullscreen;
   $('#hideOnMaximized').checked = S.smart.hideOnMaximized !== false;
   $('#expandIdleSec').value = S.smart.expandIdleSec;
+  $('#zoomIdleSec').value = S.smart.zoomIdleSec ?? 0;
   $('#zoomEnabled').checked = !!S.smart.zoomEnabled;
   $('#cycleEnabled').checked = !!S.smart.cycleEnabled;
   $('#cycleSec').value = S.smart.cycleSec;
@@ -108,6 +109,9 @@ async function init() {
   // 时间表
   $('#scheduleEnabled').checked = !!(S.schedule && S.schedule.enabled);
   renderSchedule();
+
+  // 定时任务
+  renderTasks();
 
   renderEvents();
 }
@@ -372,6 +376,94 @@ $('#restEveryWeeks').addEventListener('change', () => {
   scheduleChanged();
 });
 
+/* ---------- 定时任务管理 ---------- */
+
+const TASK_TYPE_NAMES = { shutdown: '定时关机', command: '运行命令', remind: '定时提醒' };
+const DOW_CN = '一二三四五六日';
+
+function renderTasks() {
+  const list = S.tasks || [];
+  const box = $('#task-list');
+  if (!list.length) {
+    box.innerHTML = '<div class="event-empty">暂无定时任务：可添加定时提醒 / 定时关机 / 运行命令</div>';
+    return;
+  }
+  box.innerHTML = list
+    .map((t) => {
+      const daysText =
+        t.days === 'daily' ? '每天'
+        : t.days === 'once' ? '仅一次'
+        : Array.isArray(t.days) ? '周' + t.days.map((d) => DOW_CN[d] ?? (d + 1)).join('、')
+        : '';
+      const detail = t.type === 'command' ? esc(t.command || '')
+        : t.type === 'remind' ? esc(t.message || '')
+        : `提前 ${parseInt(t.remindMin, 10) || 5} 分钟提醒（固定文案）`;
+      return `
+      <div class="task-item ${t.enabled === false ? 'off' : ''}">
+        <div class="task-info">
+          <div class="task-name">${TASK_TYPE_NAMES[t.type] || t.type} · ${esc(t.time)} · ${daysText}</div>
+          ${detail ? `<div class="task-detail">${detail}</div>` : ''}
+        </div>
+        <div class="task-ops">
+          <button class="btn" data-act="toggle" data-id="${esc(t.id)}">${t.enabled === false ? '启用' : '停用'}</button>
+          <button class="btn danger" data-act="del" data-id="${esc(t.id)}">删除</button>
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
+// 任务类型切换：定时关机显示「提前几分钟提醒」，隐藏提醒文字/命令输入
+$('#taskType').addEventListener('change', () => {
+  const isShutdown = $('#taskType').value === 'shutdown';
+  $('#taskRemindRow').hidden = !isShutdown;
+  $('#taskMessage').hidden = isShutdown;
+  $('#taskCommand').hidden = isShutdown;
+});
+
+$('#task-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const list = (S.tasks || []).slice();
+  const i = list.findIndex((t) => t.id === id);
+  if (i < 0) return;
+  if (btn.dataset.act === 'toggle') {
+    list[i] = { ...list[i], enabled: list[i].enabled === false };
+  } else if (btn.dataset.act === 'del') {
+    list.splice(i, 1);
+  } else {
+    return;
+  }
+  S = await window.config.update({ tasks: list });
+  renderTasks();
+});
+
+$('#btn-add-task').addEventListener('click', async () => {
+  const type = $('#taskType').value;
+  const time = $('#taskTime').value;
+  const daysRaw = $('#taskDays').value;
+  if (!time) return alert('请选择时间');
+  const days = daysRaw.includes(',') ? daysRaw.split(',').map(Number) : daysRaw;
+  const task = {
+    id: `t_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+    type,
+    time,
+    days,
+    command: type === 'command' ? $('#taskCommand').value.trim() : '',
+    message: type === 'remind' ? $('#taskMessage').value.trim() : '',
+    remindMin: type === 'shutdown' ? Math.max(1, parseInt($('#taskRemindMin').value, 10) || 5) : 0,
+    enabled: true,
+  };
+  if (type === 'command' && !task.command) return alert('请填写要运行的命令');
+  if (type === 'remind' && !task.message) return alert('请填写提醒文字');
+  S = await window.config.update({ tasks: (S.tasks || []).concat(task) });
+  renderTasks();
+  $('#taskCommand').value = '';
+  $('#taskMessage').value = '';
+  toast('已添加定时任务');
+});
+
 /* ---------- 事件管理 ---------- */
 
 function renderEvents() {
@@ -492,6 +584,7 @@ bind('#opExpanded', (el) => ({ ui: { opacity: { expanded: parseInt(el.value, 10)
 bind('#opZoom', (el) => ({ ui: { opacity: { zoom: parseInt(el.value, 10) / 100 } } }));
 bind('#classical', (el) => ({ ui: { classical: el.checked } }));
 bind('#darkMode', (el) => ({ ui: { darkMode: el.checked } }));
+bind('#autoStart', (el) => ({ ui: { autoStart: el.checked } }));
 bind('#stripStyle', (el) => ({ ui: { stripStyle: el.value } }));
 bind('#alwaysOnTop', (el) => ({ ui: { alwaysOnTop: el.checked } }));
 bind('#showSeconds', (el) => ({ ui: { showSeconds: el.checked } }));
@@ -499,9 +592,9 @@ bind('#showPast', (el) => ({ ui: { showPast: el.checked } }));
 bind('#smartEnabled', (el) => ({ smart: { enabled: el.checked } }));
 bind('#notifyEnabled', (el) => ({ smart: { notifyEnabled: el.checked } }));
 bind('#notifyShowSec', (el) => ({ smart: { notifyShowSec: Math.max(2, parseInt(el.value, 10) || 8) } }));
-bind('#hideOnFullscreen', (el) => ({ smart: { hideOnFullscreen: el.checked } }));
 bind('#hideOnMaximized', (el) => ({ smart: { hideOnMaximized: el.checked } }));
 bind('#expandIdleSec', (el) => ({ smart: { expandIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
+bind('#zoomIdleSec', (el) => ({ smart: { zoomIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#zoomEnabled', (el) => ({ smart: { zoomEnabled: el.checked } }));
 bind('#cycleEnabled', (el) => ({ smart: { cycleEnabled: el.checked } }));
 bind('#cycleSec', (el) => ({ smart: { cycleSec: Math.max(2, parseInt(el.value, 10) || 6) } }));
@@ -538,6 +631,7 @@ window.config.onChanged(async () => {
     $('#scheduleEnabled').checked = !!(S.schedule && S.schedule.enabled);
     applyDarkMode(S.ui.darkMode);
     renderSchedule();
+    renderTasks();
     renderEvents();
   } catch (e) {
     showErr('[同步失败] ' + (e && e.message ? e.message : String(e)));

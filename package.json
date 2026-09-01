@@ -1,7 +1,7 @@
 {
   "name": "smart-counter-island",
   "productName": "SmartCounterIsland",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Smart Counter Island —— 教室希沃大屏高考/中考倒数日：iOS 灵动岛风格悬浮窗（Windows 10/11）",
   "main": "src/main/main.js",
   "author": "Smart Counter Island",
@@ -12,6 +12,7 @@
     "test": "electron . --test",
     "smoke": "electron . --smoke",
     "shot": "electron . --shot",
+    "demo": "electron . --demo-notify",
     "icons": "node scripts/gen-icons.js",
     "pack": "electron-builder --win dir",
     "dist": "electron-builder --win dir && node scripts/rcedit-exe.js && electron-builder --win --prepackaged release/win-unpacked"

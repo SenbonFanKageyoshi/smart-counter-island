@@ -286,6 +286,39 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .event-item .e-ops .btn { padding: 5px 10px; font-size: 12px; }
 .event-empty { color: var(--muted); text-align: center; padding: 30px 0; font-size: 13px; }
 
+/* 定时任务 */
+.task-add {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-add-row { display: flex; gap: 8px; align-items: center; }
+.task-add-row select, .task-add-row input { width: auto; flex: 1; min-width: 0; }
+.task-add-row select { max-width: 140px; }
+.task-add-row input[type="time"] { max-width: 120px; }
+.task-item {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.task-item.off .task-info { opacity: 0.45; }
+.task-info { flex: 1; min-width: 0; }
+.task-name { font-weight: 700; font-size: 14px; }
+.task-detail { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-ops { display: flex; gap: 6px; }
+.task-ops .btn { padding: 5px 10px; font-size: 12px; }
+.task-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
 /* 编辑弹层 */
 .mask {
   position: fixed; inset: 0;

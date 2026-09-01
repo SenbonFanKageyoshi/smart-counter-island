@@ -41,8 +41,7 @@ function open() {
     },
   });
   win.setMenuBarVisibility(false);
-  // 置顶层级高于小岛（screen-saver > floating），避免小岛（尤其放大态）盖住标题栏导致无法关闭/拖动
-  win.setAlwaysOnTop(true, 'screen-saver');
+  // 配置窗口不置顶（用户反馈置顶烦人）；小岛放大态可能盖住它，从托盘/小岛双击仍可重新打开
   win.webContents.on('did-finish-load', () => {
     loaded = true;
     opening = false;

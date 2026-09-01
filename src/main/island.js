@@ -35,41 +35,46 @@ function easeOutCubic(t) {
  */
 function decideState(input) {
   const {
-    idleMs, occluded, maximized, overPill, nearTopBand,
-    mode, smart, hideOnFullscreen, hideOnMaximized,
-    expandIdleSec, holding, hasCountdown,
+    idleMs, occluded, maximized, overPill, state,
+    mode, smart, hideOnMaximized,
+    expandIdleSec, zoomIdleSec, zoomAllowed, zoomCooldown, holding, hasCountdown,
   } = input;
 
   // 手动操作保持期：优先于一切（否则手动放大的大屏会被立刻拉回）
   if (holding) return null;
 
-  // 没有计时时间（无有效事件）：锁定迷你条，仅手动下滑手势可展开大屏
+  // 没有计时时间（无有效事件）：锁定灵动岛，仅手动下滑手势可展开大屏
   if (!hasCountdown) return 'strip';
 
-  // 手动隐藏：默认收成灵动岛，但触摸或悬停顶部可临时唤起（避免"卡死"在隐藏态）
+  // 全屏遮挡：无条件锁定灵动岛 + 鼠标穿透，不响应任何操作/不唤起（含手动隐藏、固定模式）
+  if (occluded) {
+    return 'strip';
+  }
+
+  // 手动隐藏：始终灵动岛，悬浮不唤起（避免"鼠标移上去就展开横幅"）
   if (mode === 'hidden') {
-    if (overPill || nearTopBand) return 'expanded';
     return 'strip';
   }
 
-  // 全屏遮挡：维持灵动岛 + 鼠标穿透，不可自动唤起（避免误触弹窗干扰全屏应用）
-  if (mode !== 'pinned' && smart && hideOnFullscreen && occluded) {
-    return 'strip';
-  }
-
-  // 光标悬停在小岛或屏幕顶部附近：保持现状（不来回切换，也不因闲置展开横幅——悬浮不展开）
-  if (overPill || nearTopBand) return null;
+  // 光标悬停在小岛上：保持现状（不来回切换，按钮可点击）；
+  // 大屏为纯展示态（鼠标穿透、不可操作）：悬停不阻止收起，有操作即回到灵动岛
+  if (overPill && state !== 'zoom') return null;
 
   // 关闭智能：不自动切换，保持手动控制
   if (!smart) return null;
 
-  // 前台窗口最大化：保持迷你条（不展开遮挡教学/演示内容）
+  // 前台窗口最大化：保持灵动岛（不展开遮挡教学/演示内容）
   if (mode !== 'pinned' && hideOnMaximized && maximized) {
     return 'strip';
   }
 
-  // 默认窗口 = 灵动岛（固定，不可更改）：
-  // 无操作（闲置 expandIdleSec 秒）→ 灵动岛；有操作 → 迷你条
+  // 非全屏、非最大化时可按闲置时间自动弹出大屏（0 = 不自动；默认窗口层级：先横幅后大屏）；
+  // 操作后 zoomCooldown 期间不自动弹大屏（避免"收起后又马上弹出"）
+  if (zoomIdleSec > 0 && zoomAllowed && !zoomCooldown && idleMs >= zoomIdleSec * 1000) {
+    return 'zoom';
+  }
+
+  // 无操作（闲置 expandIdleSec 秒）→ 横幅；有操作 → 灵动岛
   if (idleMs >= expandIdleSec * 1000) {
     return 'expanded';
   }
@@ -85,6 +90,8 @@ class Island {
     this.notifySize = null;   // 通知展示框自适应尺寸（渲染器按内容测量上报）
     this.zoomWidth = 0;       // 倒计时窗口宽度（渲染器按文字内容测量上报；0 = 用默认宽度）
     this.fullscreen = false;  // 最近一次探针检测是否处于全屏遮挡（全屏锁定灵动岛）
+    this.lastLi = 0;          // 最近一次探针报告的最后输入时刻（用于检测"有操作"）
+    this.zoomCooldownUntil = 0; // 操作后 60 秒内不自动弹大屏
     this.dragging = false;
     this.animating = false;   // 动画进行中（暂停自动切换与截屏，防卡顿/打断）
     this.animTimer = null;
@@ -330,9 +337,15 @@ class Island {
     this.animateBounds(target);
     this.applyRegion();
     this.sendState();
-    // 完全透明时不拦截触摸
-    const ignore = state === 'strip' && opacity <= 0.01;
+    // 大屏（纯展示）与完全透明的灵动岛：不拦截鼠标/触摸（穿透）
+    const ignore = state === 'zoom' || (state === 'strip' && opacity <= 0.01);
     if (this.win && !this.win.isDestroyed()) this.win.setIgnoreMouseEvents(ignore);
+    // 通知形态：优先级最高——即使全屏（穿透开启中）也要立即可交互，关闭 WS_EX_TRANSPARENT
+    if (state === 'notify' && this.mousePT) {
+      this.mousePT = false;
+      const ptHwnd = this.getHwnd();
+      if (ptHwnd && this.probe) this.probe.setMousePassthrough(ptHwnd, false);
+    }
     // 状态切换后立即刷新背景感知（亮度/玻璃图），避免动画后短暂显示旧位置的模糊层或错误白边
     setTimeout(() => this.captureOnce().catch(() => {}), 250);
   }
@@ -389,7 +402,10 @@ class Island {
     // —— 全屏授课检测（真全屏盖住任务栏区域；最大化窗口不会）——
     let occluded = false;
     let maximized = false;
-    if (p && p.rect && p.pid && p.pid !== process.pid) {
+    // 桌面/外壳窗口（壁纸、任务栏等）不算全屏遮挡：否则桌面上会被误判为"全屏锁定"
+    const fgClass = p && typeof p.fgClass === 'string' ? p.fgClass : '';
+    const isDesktopShell = ['Progman', 'WorkerW', 'SHELLDLL_DefView', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd'].includes(fgClass);
+    if (p && p.rect && p.pid && p.pid !== process.pid && !isDesktopShell) {
       const sc = disp.scaleFactor;
       const l = p.rect.l / sc;
       const t = p.rect.t / sc;
@@ -425,19 +441,19 @@ class Island {
     }
 
     const cx = b.x + b.width / 2;
-    // overPill 滞回：进入判定宽松（±10px），退出判定收紧（±2px）
+    // overPill 滞回：进入判定宽松（±30px，覆盖小岛附近悬浮），退出判定收紧（±5px）
     const overEnter =
       cursorDIP &&
-      cursorDIP.x >= b.x - 10 &&
-      cursorDIP.x <= b.x + b.width + 10 &&
-      cursorDIP.y >= b.y - 10 &&
-      cursorDIP.y <= b.y + b.height + 10;
+      cursorDIP.x >= b.x - 30 &&
+      cursorDIP.x <= b.x + b.width + 30 &&
+      cursorDIP.y >= b.y - 30 &&
+      cursorDIP.y <= b.y + b.height + 30;
     const overExit =
       cursorDIP &&
-      cursorDIP.x >= b.x + 2 &&
-      cursorDIP.x <= b.x + b.width - 2 &&
-      cursorDIP.y >= b.y + 2 &&
-      cursorDIP.y <= b.y + b.height - 2;
+      cursorDIP.x >= b.x + 5 &&
+      cursorDIP.x <= b.x + b.width - 5 &&
+      cursorDIP.y >= b.y + 5 &&
+      cursorDIP.y <= b.y + b.height - 5;
     const overPill = overEnter || (this.lastOverPill && overExit);
     this.lastOverPill = !!overPill;
 
@@ -449,6 +465,12 @@ class Island {
 
     // 闲置时间（GetLastInputInfo，触摸/键鼠都会刷新）：有操作 → 展开；闲置 → 收回细条
     const idleMs = p && p.li ? Math.max(0, p.tick - p.li) : 0;
+
+    // 用户输入检测：任何输入（键/鼠/触摸）后 60 秒内不自动弹出大屏（避免"收起后又马上弹出"）
+    if (p && p.li && p.li !== this.lastLi) {
+      this.lastLi = p.li;
+      this.zoomCooldownUntil = Date.now() + 60 * 1000;
+    }
 
     // —— 系统通知接管：检测新通知 / 通知显示保持 / 免打扰过期 ——
     this.handleToasts(p);
@@ -470,12 +492,14 @@ class Island {
       occluded,
       maximized,
       overPill,
-      nearTopBand,
+      state: this.state,
       mode,
       smart: s.enabled,
-      hideOnFullscreen: s.hideOnFullscreen,
       hideOnMaximized: s.hideOnMaximized !== false,
       expandIdleSec: s.expandIdleSec,
+      zoomIdleSec: s.zoomIdleSec || 0,
+      zoomAllowed: this.zoomAllowed(),
+      zoomCooldown: Date.now() < this.zoomCooldownUntil,
       holding,
       hasCountdown: this.hasCountdown(),
     });
@@ -491,8 +515,8 @@ class Island {
       this.setState(next);
     }
 
-    // —— 全屏遮挡时鼠标穿透：细条不挡全屏应用的触摸/点击；展开/唤起后自动恢复交互 ——
-    const wantPT = !!occluded && this.state === 'strip' && s.hideOnFullscreen && mode !== 'pinned';
+    // —— 全屏遮挡时鼠标穿透：灵动岛不挡全屏应用的触摸/点击（全屏无条件锁定，不可唤起） ——
+    const wantPT = !!occluded && this.state === 'strip';
     if (wantPT !== this.mousePT) {
       this.mousePT = wantPT;
       const ptHwnd = this.getHwnd();
@@ -608,20 +632,31 @@ class Island {
     }
   }
 
-  /** 显示系统通知（无样式黑底白字，保持一段时间） */
-  showNotification(title, body) {
+  /** 显示系统通知（无样式黑底白字，保持一段时间）。优先级最高：全屏/最大化时也展开并可交互。
+      opts: { keywords?: string[]（正文中这些词显示为红色）, btn?: {label, act}（底部操作按钮，替代免打扰按钮）, alert?: boolean（提醒类：文字高频模糊抖动） } */
+  showNotification(title, body, opts) {
+    const o = opts || {};
+    const payload = {
+      title,
+      body: body || '',
+      keywords: Array.isArray(o.keywords) ? o.keywords : [],
+      btn: o.btn || null,
+      alert: !!o.alert, // 提醒类（定时提醒/关机提醒）：文字高频模糊抖动，吸引注意
+    };
+    // 窗口隐藏时先恢复显示（鲁棒）
+    if (this.win && !this.win.isDestroyed() && !this.win.isVisible()) this.win.show();
     const showSec = Math.max(2, settings.load().smart.notifyShowSec || 8) * 1000;
     if (this.state === 'notify') {
       // 通知显示中又来新通知：更新内容并顺延
       this.notifyUntil = Date.now() + showSec;
-      this.notifyData = { title, body };
-      this.send('island:notify', { title, body });
+      this.notifyData = payload;
+      this.send('island:notify', payload);
       return;
     }
     this.notifyPrevState = this.state;
     this.notifyUntil = Date.now() + showSec;
-    this.notifyData = { title, body };
-    this.send('island:notify', { title, body });
+    this.notifyData = payload;
+    this.send('island:notify', payload);
     this.setState('notify');
   }
 
@@ -694,6 +729,15 @@ class Island {
         this.notifyDndUntil = this.computeDndUntil();
         this.dismissNotify();
         break;
+      case 'cancel-shutdown':
+        // 取消自动关机（任务提醒/关机倒计时通知上的按钮）
+        try {
+          const tasksMod = require('./tasks');
+          tasksMod.cancelShutdowns();
+        } catch (e) {
+          /* ignore */
+        }
+        break;
       case 'pin':
         this.setManual(settings.load().manual.mode === 'pinned' ? 'auto' : 'pinned');
         break;
@@ -765,7 +809,7 @@ class Island {
           this.send('island:glassmode', { mode: 'fake' });
         }
       }
-      this.glassTimer = setTimeout(loop, this.animating || this.dragging ? 800 : 1600);
+      this.glassTimer = setTimeout(loop, this.animating || this.dragging ? 800 : this.state === 'strip' ? 2500 : 1600);
     };
     loop();
   }
@@ -777,7 +821,8 @@ class Island {
   }
 
   async captureOnce() {
-    if (this.capturing || this.dragging || this.animating || this.state === 'strip') return;
+    // strip（灵动岛）也持续检测背景亮度（白边判定依据"正下方全黑"），只是不发玻璃图
+    if (this.capturing || this.dragging || this.animating) return;
     this.capturing = true;
     try {
       const st = settings.load();
@@ -865,7 +910,8 @@ class Island {
   applySettings() {
     const st = settings.load();
     if (this.win && !this.win.isDestroyed()) {
-      this.win.setAlwaysOnTop(st.ui.alwaysOnTop, 'floating');
+      // screen-saver = Electron 最高置顶层级：不被 QQ 等应用的窗口/弹窗盖住
+      this.win.setAlwaysOnTop(st.ui.alwaysOnTop, 'screen-saver');
     }
     this.setState(this.state); // 重新计算位置/尺寸/透明度
     this.applyGlass();
@@ -907,7 +953,7 @@ class Island {
         backgroundThrottling: false,
       },
     });
-    this.win.setAlwaysOnTop(true, 'floating');
+    this.win.setAlwaysOnTop(true, 'screen-saver');
     this.win.on('closed', () => {
       this.win = null;
       if (!this.quitting) {

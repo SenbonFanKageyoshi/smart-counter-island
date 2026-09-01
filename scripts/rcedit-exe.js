@@ -27,8 +27,8 @@ function main() {
     '--set-version-string', 'ProductName', 'Smart Counter Island',
     '--set-version-string', 'FileDescription', 'Smart Counter Island - 高考/中考倒数日 灵动岛悬浮窗',
     '--set-version-string', 'CompanyName', 'Smart Counter Island',
-    '--set-file-version', '1.2.0.0',
-    '--set-product-version', '1.2.0.0',
+    '--set-file-version', '1.3.0.0',
+    '--set-product-version', '1.3.0.0',
   ], { stdio: 'inherit' });
   console.log('[rcedit] 已写入图标与版本信息:', exe);
 }

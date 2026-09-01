@@ -17,3 +17,9 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# WinUI 3 POC（探索性验证，不入库）
+winui3-poc/
+
+# 无关项目（勿提交）
+transcribe/

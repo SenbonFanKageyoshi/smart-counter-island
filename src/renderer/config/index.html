@@ -24,6 +24,7 @@
   <button class="tab" data-tab="display">显示效果</button>
   <button class="tab" data-tab="smart">智能行为</button>
   <button class="tab" data-tab="schedule">时间表</button>
+  <button class="tab" data-tab="tasks">定时任务</button>
   <button class="tab" data-tab="about">关于</button>
 </nav>
 
@@ -54,6 +55,9 @@
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="darkMode"> 暗色模式（配置窗口深色主题）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="autoStart"> 开机自启（登录 Windows 后自动运行）</label>
     </div>
 
     <h3 class="group-title">三种状态窗口的位置（各自独立）</h3>
@@ -150,15 +154,17 @@
       <input type="number" id="notifyShowSec" min="2" max="60" step="1">
     </div>
     <div class="field">
-      <label class="inline"><input type="checkbox" id="hideOnFullscreen"> 全屏授课/全屏视频时收成灵动岛并鼠标穿透</label>
-    </div>
-    <div class="field">
       <label class="inline"><input type="checkbox" id="hideOnMaximized"> 有窗口最大化时保持灵动岛（不展开遮挡）</label>
     </div>
     <div class="field">
       <label>无操作多少秒后展开为横幅</label>
       <input type="number" id="expandIdleSec" min="0" max="120" step="1">
       <p class="desc">默认窗口为横幅：无操作达到秒数后展开；有操作（移动鼠标/触摸）时收成灵动岛；全屏状态下始终维持灵动岛并鼠标穿透。</p>
+    </div>
+    <div class="field">
+      <label>无操作多少秒后自动弹出大屏（0 = 不自动）</label>
+      <input type="number" id="zoomIdleSec" min="0" max="3600" step="1">
+      <p class="desc">非全屏、非最大化状态下，无操作达到秒数后自动弹出倒计时窗口（纯展示、鼠标穿透，动一下即收回）。</p>
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="zoomEnabled"> 允许倒计时窗口（按住向下拖 / 菜单放大）</label>
@@ -191,6 +197,36 @@
       <input type="number" id="restEveryWeeks" min="0" max="8" step="1">
     </div>
     <div id="schedule-list"></div>
+  </section>
+
+  <!-- ============ 定时任务 ============ -->
+  <section id="tab-tasks" class="tabpage">
+    <div class="task-add">
+      <div class="task-add-row">
+        <select id="taskType">
+          <option value="remind">定时提醒</option>
+          <option value="shutdown">定时关机</option>
+          <option value="command">运行命令</option>
+        </select>
+        <input type="time" id="taskTime" value="20:00">
+        <select id="taskDays">
+          <option value="daily">每天</option>
+          <option value="once">仅一次</option>
+          <option value="1,2,3,4,5">工作日</option>
+        </select>
+        <button id="btn-add-task" class="btn primary">＋ 添加</button>
+      </div>
+      <div class="task-add-row">
+        <input type="text" id="taskCommand" placeholder="命令（运行命令时填写，如 notepad.exe）">
+        <input type="text" id="taskMessage" placeholder="提醒文字（定时提醒时填写，如：该下课了）">
+      </div>
+      <div class="task-add-row" id="taskRemindRow" hidden>
+        <label for="taskRemindMin">关机前几分钟提醒（提醒文案固定，关键词红色显示）</label>
+        <input type="number" id="taskRemindMin" min="1" max="120" step="1" value="5">
+      </div>
+      <div class="task-hint">自动关机任务可随时取消：提醒与关机倒计时通知上都有「取消关机」按钮，取消后当天不再触发。</div>
+    </div>
+    <div id="task-list"></div>
   </section>
 
   <!-- ============ 关于 ============ -->

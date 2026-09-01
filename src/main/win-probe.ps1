@@ -236,6 +236,12 @@ while ($true) {
   if ($line -ne 'probe') { continue }
 
   $fg = [Probe]::GetForegroundWindow()
+  $fgClass = ''
+  if ($fg -ne [intptr]::Zero) {
+    $clsSb = New-Object System.Text.StringBuilder 256
+    [void][Probe]::GetClassName($fg, $clsSb, 256)
+    $fgClass = $clsSb.ToString()
+  }
   $r = [Probe+RECT]::new()
   $ok = [Probe]::GetWindowRect($fg, [ref]$r)
   $vis = [Probe]::IsWindowVisible($fg)
@@ -261,15 +267,16 @@ while ($true) {
     $rect = @{ l = $r.Left; t = $r.Top; r = $r.Right; b = $r.Bottom }
   }
   $o = [ordered]@{
-    fg     = $fg.ToInt64()
-    vis    = [bool]$vis
-    pid    = $procId
-    rect   = $rect
-    cx     = $p.X
-    cy     = $p.Y
-    li     = $liVal
-    tick   = [Environment]::TickCount
-    toasts = $script:toasts
+    fg      = $fg.ToInt64()
+    fgClass = $fgClass
+    vis     = [bool]$vis
+    pid     = $procId
+    rect    = $rect
+    cx      = $p.X
+    cy      = $p.Y
+    li      = $liVal
+    tick    = [Environment]::TickCount
+    toasts  = $script:toasts
   }
   [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress))
   [Console]::Out.Flush()

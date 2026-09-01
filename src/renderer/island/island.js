@@ -48,9 +48,29 @@ window.island.onEvents((e) => {
 });
 
 window.island.onNotify((d) => {
-  notify = { title: d.title || '系统通知', body: d.body || '' };
+  notify = {
+    title: d.title || '系统通知',
+    body: d.body || '',
+    keywords: Array.isArray(d.keywords) ? d.keywords : [],
+    btn: d.btn || null,
+    alert: !!d.alert, // 提醒类：文字高频模糊抖动
+  };
   render();
-});window.island.onGlass((g) => {
+});
+
+/** 正文关键词红色高亮（如"关机"），仅对已转义文本中的纯关键词生效 */
+function highlightKeywords(text) {
+  let out = text;
+  for (const kw of notify.keywords) {
+    if (!kw) continue;
+    const escKw = ESC(kw);
+    if (!escKw) continue;
+    out = out.split(escKw).join('<span class="n-key">' + escKw + '</span>');
+  }
+  return out;
+}
+
+window.island.onGlass((g) => {
   const el = $('#glass');
   el.style.display = 'block';
   el.style.backgroundImage = `url(${g.dataUrl})`;
@@ -145,13 +165,19 @@ function currentInfo() {
 function render() {
   const box = $('#content');
 
-  // 系统通知优先渲染（不依赖倒计时事件是否存在）；免打扰按钮在弹窗下方 #dnd-bar
+  // 系统通知优先渲染（不依赖倒计时事件是否存在）；操作按钮在弹窗下方 #dnd-bar
   if (state === 'notify') {
+    const bodyHtml = notify && notify.body ? highlightKeywords(ESC(notify.body)) : '';
     box.innerHTML = `
       <div class="n-wrap">
         <div class="n-title">${ESC(notify ? notify.title : '系统通知')}</div>
-        ${notify && notify.body ? `<div class="n-body">${ESC(notify.body)}</div>` : ''}
+        ${bodyHtml ? `<div class="n-body">${bodyHtml}</div>` : ''}
       </div>`;
+    // 弹窗下方按钮：自定义按钮（如「取消关机」）或默认「免打扰至下课」
+    const bar = $('#dnd-bar');
+    bar.innerHTML = notify && notify.btn
+      ? `<button class="n-btn" data-act="${ESC(notify.btn.act || '')}">${ESC(notify.btn.label || '取消')}</button><span class="n-hint">滑动收起</span>`
+      : '<button class="n-btn" data-act="dnd">🔕 免打扰至下课</button><span class="n-hint">滑动收起</span>';
     scheduleNotifyMeasure();
     return;
   }

@@ -6,6 +6,7 @@ const settings = require('./settings');
 const { Probe } = require('./probe');
 const island = require('./island');
 const config = require('./config');
+const tasks = require('./tasks');
 
 // 统一 userData 目录名（必须在 ready 前调用）
 app.setName('SmartCounterIsland');
@@ -51,6 +52,7 @@ async function main() {
 
   registerIpc();
   createTray();
+  applyAutoStart();
 
   try {
     await island.create();
@@ -58,10 +60,50 @@ async function main() {
     console.error('[main] 灵动岛创建失败:', e);
   }
 
+  // 计划任务检查：每 30 秒检查一次（时间匹配到分钟即可）
+  setInterval(() => {
+    try {
+      tasks.checkTasks(new Date());
+    } catch (e) {
+      console.error('[tasks] 检查失败:', e.message);
+    }
+  }, 30000);
+
   const argv = process.argv;
   if (argv.includes('--test')) runTests();
   else if (argv.includes('--shot')) runShots();
   else if (argv.includes('--smoke')) runSmoke();
+  else if (argv.includes('--demo-notify')) runDemoNotify();
+}
+
+// ---------------- 通知演示模式（只测通知，延长显示时间便于观察抖动特效） ----------------
+
+async function runDemoNotify() {
+  console.log('[demo] 通知演示：将连续显示 3 条通知（各顺延 30 秒），可随时滑动收起');
+  // 拉长通知显示时长便于观察
+  settings.update({ smart: { notifyShowSec: 30 } });
+  island.applySettings();
+  await new Promise((r) => setTimeout(r, 1500));
+  island.showNotification('测试应用', '这是一条测试通知内容，观察文字的左右震动与拖泥带水的模糊感');
+  await new Promise((r) => setTimeout(r, 9000));
+  island.showNotification('测试应用', '第二条通知：内容变化后同样生效，震动与拖影更明显');
+  await new Promise((r) => setTimeout(r, 9000));
+  island.showNotification('定时提醒', '提醒类通知：关键词【关机】红色显示', { keywords: ['关机'] });
+  await new Promise((r) => setTimeout(r, 14000));
+  console.log('[demo] 演示结束');
+  app.exit(0);
+}
+
+/** 应用开机自启设置（Electron 原生支持，写 HKCU Run 键） */
+function applyAutoStart() {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: !!settings.load().ui.autoStart,
+      path: process.execPath,
+    });
+  } catch (e) {
+    console.error('[main] 开机自启设置失败:', e.message);
+  }
 }
 
 // ---------------- 界面截图（开发验证用） ----------------
@@ -239,6 +281,7 @@ function registerIpc() {
   ipcMain.handle('config:update', (_e, patch) => {
     const next = settings.update(patch);
     island.applySettings();
+    applyAutoStart(); // 开机自启变化即时生效
     config.broadcastChanged();
     return next;
   });
@@ -328,27 +371,31 @@ function runTests() {
 
       // —— T2 状态机决策（纯函数）——
       const base = {
-        idleMs: 0, occluded: false, maximized: false, overPill: false, nearTopBand: false,
-        mode: 'auto', smart: true, hideOnFullscreen: true, hideOnMaximized: true,
-        expandIdleSec: 4, holding: false, hasCountdown: true,
+        idleMs: 0, occluded: false, maximized: false, overPill: false,
+        mode: 'auto', smart: true, hideOnMaximized: true,
+        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
       };
-      ok('T2 有操作→迷你条', island.decideState(base) === 'strip');
-      ok('T2 闲置5s→默认窗口灵动岛', island.decideState({ ...base, idleMs: 5000 }) === 'expanded');
-      ok('T2 默认窗口固定灵动岛（不可更改）', island.decideState({ ...base, idleMs: 99999 }) === 'expanded');
-      ok('T2 无计时时间→锁定迷你条', island.decideState({ ...base, hasCountdown: false, idleMs: 99999 }) === 'strip');
+      ok('T2 有操作→灵动岛', island.decideState(base) === 'strip');
+      ok('T2 闲置5s→默认窗口横幅', island.decideState({ ...base, idleMs: 5000 }) === 'expanded');
+      ok('T2 默认窗口固定横幅（不可更改）', island.decideState({ ...base, idleMs: 99999 }) === 'expanded');
+      ok('T2 闲置15s→自动弹出大屏', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 15000 }) === 'zoom');
+      ok('T2 关闭大屏→闲置不弹大屏', island.decideState({ ...base, zoomIdleSec: 15, zoomAllowed: false, idleMs: 99999 }) === 'expanded');
+      ok('T2 全屏+闲置15s→仍锁定灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, occluded: true }) === 'strip');
+      ok('T2 最大化+闲置15s→保持灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, maximized: true }) === 'strip');
+      ok('T2 无计时时间→锁定灵动岛', island.decideState({ ...base, hasCountdown: false, idleMs: 99999 }) === 'strip');
       ok('T2 无计时时间+悬停→仍锁定', island.decideState({ ...base, hasCountdown: false, overPill: true }) === 'strip');
-      ok('T2 无计时时间+全屏遮挡→灵动岛', island.decideState({ ...base, hasCountdown: false, occluded: true, overPill: true }) === 'strip');
-      ok('T2 全屏遮挡→灵动岛', island.decideState({ ...base, occluded: true }) === 'strip');
-      ok('T2 全屏遮挡+触摸→维持灵动岛（不唤起）', island.decideState({ ...base, occluded: true, overPill: true }) === 'strip');
-      ok('T2 全屏遮挡+悬停顶部→维持灵动岛（不唤起）', island.decideState({ ...base, occluded: true, nearTopBand: true }) === 'strip');
+      ok('T2 全屏遮挡→灵动岛（无条件）', island.decideState({ ...base, occluded: true }) === 'strip');
+      ok('T2 全屏+触摸→维持灵动岛（不唤起）', island.decideState({ ...base, occluded: true, overPill: true }) === 'strip');
+      ok('T2 全屏+固定模式→仍锁定灵动岛', island.decideState({ ...base, mode: 'pinned', occluded: true, idleMs: 0 }) === 'strip');
       ok('T2 隐藏模式→灵动岛', island.decideState({ ...base, mode: 'hidden' }) === 'strip');
-      ok('T2 隐藏模式+触摸小岛→可唤起', island.decideState({ ...base, mode: 'hidden', overPill: true }) === 'expanded');
-      ok('T2 固定模式忽略遮挡（按操作状态走）', island.decideState({ ...base, mode: 'pinned', occluded: true, idleMs: 0 }) === 'strip');
+      ok('T2 隐藏模式+悬停→不唤起（悬浮不展开）', island.decideState({ ...base, mode: 'hidden', overPill: true }) === 'strip');
+      ok('T2 全屏+隐藏模式→不唤起', island.decideState({ ...base, mode: 'hidden', occluded: true, overPill: true }) === 'strip');
       ok('T2 光标悬停→保持现状', island.decideState({ ...base, overPill: true }) === null);
-      ok('T2 顶部附近悬浮→保持现状（不展开）', island.decideState({ ...base, nearTopBand: true, idleMs: 99999 }) === null);
+      ok('T2 大屏悬停→不阻止收起（有操作回灵动岛）', island.decideState({ ...base, state: 'zoom', overPill: true, idleMs: 100 }) === 'strip');
+      ok('T2 操作后冷却期内不自动弹大屏', island.decideState({ ...base, zoomIdleSec: 15, zoomCooldown: true, idleMs: 99999 }) === 'expanded');
       ok('T2 手动保持期→保持现状', island.decideState({ ...base, holding: true, idleMs: 99999 }) === null);
       ok('T2 关闭智能→保持现状', island.decideState({ ...base, smart: false, idleMs: 99999 }) === null);
-      ok('T2 窗口最大化→保持迷你条', island.decideState({ ...base, maximized: true, idleMs: 99999 }) === 'strip');
+      ok('T2 窗口最大化→保持灵动岛', island.decideState({ ...base, maximized: true, idleMs: 99999 }) === 'strip');
 
       // —— T3 配置窗口生命周期（核心 bug 复现）——
       config.open();
@@ -356,7 +403,7 @@ function runTests() {
       ok('T3 配置窗口已打开', config.isOpen());
       ok('T3 配置窗口已加载', config.isLoaded());
       const cwin = config.getWindow();
-      ok('T3 配置窗口置顶(高于小岛)', !!(cwin && cwin.isAlwaysOnTop()));
+      ok('T3 配置窗口不置顶（用户要求去掉）', !!cwin && !cwin.isAlwaysOnTop());
       const w1 = BrowserWindow.getAllWindows().length;
       ok(`T3 窗口数=2(小岛+配置) 实际=${w1}`, w1 === 2);
       config.open(); // 重复打开应复用
@@ -511,6 +558,44 @@ function runTests() {
       await sleep(400);
 
       // —— T9 拖拽放大保持 + 防误触 ——
+      // 桌面（Progman/WorkerW 壁纸窗口）不算全屏遮挡：闲置后应正常展开横幅
+      const deskDisp = island.islandDisplay();
+      const deskDb = deskDisp.bounds;
+      island.probe.last = {
+        ...island.probe.last,
+        fgClass: 'Progman',
+        rect: { l: deskDb.x, t: deskDb.y, r: deskDb.x + deskDb.width, b: deskDb.y + deskDb.height },
+        pid: 1234, li: 1, tick: 1000000000,
+        cx: deskDb.x + deskDb.width - 300, cy: deskDb.y + deskDb.height - 300,
+      };
+      island.lastAutoSwitch = 0;
+      island.animating = false;
+      island.lastLi = 1; // 吸收桌面测试数据的 li，避免输入检测误设冷却
+      island.zoomCooldownUntil = 0; // 清冷却，验证桌面闲置可自动弹大屏
+      island.tick();
+      // 桌面不锁定：闲置巨大 → 按层级自动弹大屏（15s）而非被"全屏锁定"卡在灵动岛
+      ok(`T9 桌面前台→不锁定（闲置后自动展开，state=${island.state}）`, island.state === 'zoom');
+      // 操作后冷却期内：闲置再大也不自动弹大屏（避免收起后马上又弹出）
+      island.zoomCooldownUntil = Date.now() + 60000;
+      island.animating = false;
+      island.lastAutoSwitch = 0;
+      island.tick();
+      ok(`T9 操作后冷却期内不自动弹大屏 (state=${island.state}, cooldown=${island.zoomCooldownUntil > Date.now()})`, island.state === 'expanded');
+      island.zoomCooldownUntil = 0;
+      // 大屏展开后：有操作（光标在大屏上、非闲置）应收起为灵动岛
+      island.manualState('zoom', 0);
+      island.animating = false;
+      const zb9 = island.win.getBounds();
+      island.probe.last = {
+        ...island.probe.last,
+        fgClass: 'Sci_App',
+        rect: null,
+        pid: 9999, li: 0, tick: 100,
+        cx: zb9.x + 40, cy: zb9.y + 40,
+      };
+      island.lastAutoSwitch = 0;
+      island.tick();
+      ok('T9 大屏有操作→自动收起', island.state === 'strip');
       island.manualState('strip', 0);
       await sleep(300);
       island.animating = false;
@@ -562,6 +647,17 @@ function runTests() {
       island.animating = false;
       island.onAction({ type: 'gesture', dy: -60 });
       ok('T9 上滑→收起成灵动岛', island.state === 'strip');
+      // 大屏为纯展示：鼠标穿透（不可操作），收回后恢复交互
+      const ignoreCalls = [];
+      const origSetIgnore = island.win.setIgnoreMouseEvents.bind(island.win);
+      island.win.setIgnoreMouseEvents = (v) => { ignoreCalls.push(v); return origSetIgnore(v); };
+      island.manualState('zoom', 6000);
+      island.animating = false;
+      ok('T9 大屏鼠标穿透（不可操作）', ignoreCalls.length > 0 && ignoreCalls[ignoreCalls.length - 1] === true);
+      island.manualState('strip', 0);
+      island.animating = false;
+      ok('T9 灵动岛恢复交互', ignoreCalls[ignoreCalls.length - 1] === false);
+      island.win.setIgnoreMouseEvents = origSetIgnore;
       // 倒计时窗口宽度随文字内容自适应（渲染器测量上报 → 主进程调整宽度）
       island.manualState('zoom', 6000);
       island.animating = false;
@@ -633,6 +729,45 @@ function runTests() {
       );
       island.onAction({ type: 'dismiss' });
       island.setPaused(false);
+      // 通知优先级最高：全屏（穿透中）与最大化时也能展开且可交互
+      island.manualState('strip', 0);
+      island.animating = false;
+      island.lastAutoSwitch = 0;
+      const disp10 = island.islandDisplay();
+      const db10 = disp10.bounds;
+      island.probe.last = {
+        ...island.probe.last,
+        fgClass: 'Sci_Fullscreen',
+        rect: { l: db10.x, t: db10.y, r: db10.x + db10.width, b: db10.y + db10.height },
+        pid: 8888, li: 1, tick: 100,
+        cx: db10.x + 200, cy: db10.y + 200,
+      };
+      island.tick(); // 全屏 → 灵动岛 + 穿透开启
+      ok('T10 全屏→灵动岛并开启穿透', island.state === 'strip' && island.mousePT === true);
+      island.handleToasts({ toasts: ['666|测试应用|全屏时的通知'] });
+      await sleep(300);
+      ok('T10 全屏时通知优先展开并关闭穿透', island.state === 'notify' && island.mousePT === false);
+      island.onAction({ type: 'dismiss' });
+      // 最大化时通知同样可展开
+      island.probe.last = {
+        ...island.probe.last,
+        fgClass: 'Sci_Max',
+        rect: { l: db10.x, t: db10.y, r: db10.x + db10.width, b: db10.y + Math.round(db10.height * 0.95) },
+        pid: 8888, li: 1, tick: 100,
+        cx: db10.x + 200, cy: db10.y + 200,
+      };
+      island.lastAutoSwitch = 0;
+      island.tick();
+      ok('T10 最大化→保持灵动岛', island.state === 'strip');
+      island.handleToasts({ toasts: ['777|测试应用|最大化时的通知'] });
+      await sleep(300);
+      ok('T10 最大化时通知可展开', island.state === 'notify');
+      island.onAction({ type: 'dismiss' });
+      // 恢复中性数据，进入时间表测试
+      island.probe.last = { ...island.probe.last, fgClass: 'Sci_Neutral', rect: null, li: 999999900, tick: 1000000000 };
+      island.lastAutoSwitch = 0;
+      island.animating = false;
+      island.tick();
       // 时间表下课时间计算（新结构：多周循环）
       island.notifyDndUntil = 0;
       const now10 = new Date();
@@ -704,6 +839,72 @@ function runTests() {
       config.close();
       await sleep(400);
       settings.update({ schedule: { enabled: false } });
+
+      // —— T12 计划任务 + 开机自启 + 定时任务 UI ——
+      const tasksMod = require('./tasks');
+      const tNow12 = new Date();
+      const hm12 = String(tNow12.getHours()).padStart(2, '0') + ':' + String(tNow12.getMinutes()).padStart(2, '0');
+      settings.update({
+        tasks: [
+          { id: 't1', type: 'remind', time: hm12, days: 'daily', message: '测试提醒', enabled: true },
+          { id: 't2', type: 'remind', time: '23:59', days: 'daily', message: '不该触发', enabled: true },
+          { id: 't3', type: 'command', time: hm12, days: 'once', command: 'echo hi', enabled: true },
+        ],
+      });
+      const fired12 = [];
+      const executed12 = tasksMod.checkTasks(tNow12, (t) => fired12.push(t.id));
+      ok(`T12 计划任务时间匹配执行 (fired=${fired12.join(',')})`, fired12.includes('t1') && fired12.includes('t3') && !fired12.includes('t2'));
+      ok('T12 一次性任务执行后自动删除', !(settings.load().tasks || []).some((t) => t.id === 't3'));
+      // 周几匹配
+      const dow12 = (tNow12.getDay() + 6) % 7;
+      const otherDow = (dow12 + 1) % 7;
+      const matchDow = tasksMod.trigger({ time: hm12, days: [dow12], enabled: true }, tNow12);
+      const notMatchDow = tasksMod.trigger({ time: hm12, days: [otherDow], enabled: true }, tNow12);
+      ok('T12 计划任务按周几匹配', matchDow === 'run' && notMatchDow === null);
+      // 关机任务：提前提醒点与关机点
+      const remindAt = tasksMod.trigger({ id: 's1', type: 'shutdown', time: '10:00', remindMin: 5, days: 'daily', enabled: true }, new Date(2026, 0, 1, 9, 55));
+      const shutAt = tasksMod.trigger({ id: 's1', type: 'shutdown', time: '10:00', remindMin: 5, days: 'daily', enabled: true }, new Date(2026, 0, 1, 10, 0));
+      const noTrigger = tasksMod.trigger({ id: 's1', type: 'shutdown', time: '10:00', remindMin: 5, days: 'daily', enabled: true }, new Date(2026, 0, 1, 9, 54));
+      ok(`T12 关机任务提前提醒/关机触发点 (remind=${remindAt}, shut=${shutAt}, none=${noTrigger})`, remindAt === 'remind' && shutAt === 'shutdown' && noTrigger === null);
+      // 取消关机：当天标记后不再触发；取消动作标记任务
+      settings.update({ tasks: [{ id: 's1', type: 'shutdown', time: hm12, remindMin: 1, days: 'daily', enabled: true }] });
+      island.onAction({ type: 'cancel-shutdown' });
+      await sleep(300);
+      const s1 = (settings.load().tasks || []).find((t) => t.id === 's1');
+      ok(`T12 取消关机后当天不再触发 (cancelUntil=${s1 && s1.cancelUntil})`, !!s1 && s1.cancelUntil === tasksMod.localDate(new Date()));
+      ok('T12 取消后 trigger 返回 null', tasksMod.trigger(s1, tNow12) === null);
+      // 关机提醒通知：关键词红色高亮 + 取消按钮 + 正文抖动（标题不抖）
+      island.showNotification('关机提醒', '电脑将在 5 分钟后自动关机（20:00）', {
+        keywords: ['关机'],
+        btn: { label: '取消关机', act: 'cancel-shutdown' },
+      });
+      await sleep(500);
+      const nKeyDom = await island.win.webContents.executeJavaScript(`({ key: !!document.querySelector('.n-key'), keyText: (document.querySelector('.n-key')||{}).textContent, btn: (document.querySelector('#dnd-bar .n-btn')||{}).textContent, bodyAnim: document.querySelector('.n-body') ? getComputedStyle(document.querySelector('.n-body')).animationName : 'none', titleAnim: getComputedStyle(document.querySelector('.n-title')).animationName })`);
+      ok(`T12 关键词高亮+取消按钮+正文抖动标题不抖 (key=${nKeyDom.keyText}, btn=${nKeyDom.btn}, body=${nKeyDom.bodyAnim}, title=${nKeyDom.titleAnim})`, nKeyDom.key === true && nKeyDom.keyText === '关机' && nKeyDom.btn === '取消关机' && nKeyDom.bodyAnim === 'n-alert-jitter' && nKeyDom.titleAnim === 'none');
+      island.onAction({ type: 'dismiss' });
+      // 开机自启设置读写
+      settings.update({ ui: { autoStart: true } });
+      ok('T12 开机自启设置写入', settings.load().ui.autoStart === true);
+      settings.update({ ui: { autoStart: false } });
+      // 定时任务页 UI：添加 + 列表渲染
+      config.open();
+      await sleep(1000);
+      const cw12 = config.getWindow();
+      const js12 = (code) => cw12.webContents.executeJavaScript(code);
+      await js12(`document.querySelector('[data-tab="tasks"]').click()`);
+      await js12(`document.getElementById('taskType').value='remind'; document.getElementById('taskTime').value='08:00'; document.getElementById('taskDays').value='daily'; document.getElementById('taskMessage').value='早上好'; document.getElementById('btn-add-task').click()`);
+      await sleep(700);
+      const taskItems = await js12(`document.querySelectorAll('#task-list .task-item').length`);
+      const taskText = await js12(`document.getElementById('task-list').innerText`);
+      ok(`T12 定时任务页添加并渲染 (items=${taskItems})`, taskItems >= 1 && taskText.includes('定时提醒') && taskText.includes('08:00'));
+      // 关机任务表单：显示提前提醒输入、隐藏提醒文字
+      await js12(`document.getElementById('taskType').value='shutdown'; document.getElementById('taskType').dispatchEvent(new Event('change'))`);
+      const remindRowHidden = await js12(`document.getElementById('taskRemindRow').hidden`);
+      const msgHidden = await js12(`document.getElementById('taskMessage').hidden`);
+      ok(`T12 关机任务表单（提前提醒显示=${!remindRowHidden}, 提醒文字隐藏=${msgHidden}）`, remindRowHidden === false && msgHidden === true);
+      settings.update({ tasks: [] });
+      config.close();
+      await sleep(400);
 
       const failed = results.some(([c]) => !c);
       console.log(failed ? 'TEST_FAIL' : 'TEST_OK');

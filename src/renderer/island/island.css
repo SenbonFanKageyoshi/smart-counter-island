@@ -89,30 +89,32 @@ body[data-glass="capture"] #pill {
     0 4px 12px rgba(8, 16, 40, 0.18);
 }
 
-/* —— 无效果（off）：强制黑底白字；背景几乎全黑时加细白边。
-   黑底形态不使用外部投影与大内阴影：投影/内阴影超出圆角命中区域会被 Win32
-   硬切，产生沿区域边缘的"黑边/不规则边界"，故只用 1px 细描边（视觉层次足够） —— */
+/* —— 无效果（off）：纯黑底白字；仅当背景全黑时（data-bg=dark）加 1px 纯白边分隔（非发光） —— */
 body[data-glass="off"] #pill {
-  background: rgba(12, 16, 24, 0.94);
+  background: #000000;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 body[data-glass="off"][data-bg="dark"] #pill {
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
-    0 0 0 1.5px rgba(255, 255, 255, 0.75),
-    0 0 0 4px rgba(255, 255, 255, 0.18);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 
-/* —— 细条（默认形态）：黑底白字胶囊（无外部投影/大内阴影防黑边）；
+/* —— 灵动岛（默认形态）：纯黑底白字胶囊；背景全黑时加 1px 纯白边；
    可选 data-strip="glass"：跟随玻璃效果（可自定义） —— */
 body[data-state="strip"][data-strip="black"] #pill {
-  background: rgba(12, 16, 24, 0.94);
+  background: #000000;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+body[data-state="strip"][data-strip="black"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 
-/* —— 系统通知：黑底白字弹窗（只含标题+正文）；免打扰按钮独立在弹窗下方 —— */
+/* —— 系统通知：纯黑底白字弹窗；背景全黑时加 1px 纯白边 —— */
 body[data-state="notify"] #pill {
   top: 8px;
   left: 8px;
@@ -121,9 +123,14 @@ body[data-state="notify"] #pill {
   /* 弹窗高度 = 窗口内容 - 上下 PAD(16) - 顶部边距8 - 间隙6 - 按钮24 - 底部边距8；
      与渲染器测量公式保持一致（改了 CSS 需同步 island.js measureNotify） */
   height: calc(100% - 62px);
-  background: rgba(12, 16, 24, 0.95);
+  background: #000000;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+body[data-state="notify"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.85);
 }
 
 /* —— 免打扰至下课按钮：独立小胶囊，显示在消息弹窗下方（仅通知形态） —— */
@@ -239,7 +246,7 @@ body[data-state="notify"] #dnd-bar { display: flex; }
 .z-time { font-size: var(--z-time, 30px); font-weight: 700; letter-spacing: 2px; white-space: nowrap; }
 .z-time .sep { color: var(--ink-soft); font-weight: 600; }
 
-/* ===== 操作按钮（仅最大窗口显示，底部居中） ===== */
+/* ===== 操作按钮（大屏展示模式已移除：倒计时窗口为纯展示、鼠标穿透） ===== */
 #buttons {
   position: absolute;
   bottom: 10px;
@@ -252,7 +259,6 @@ body[data-state="notify"] #dnd-bar { display: flex; }
   transition: opacity 0.18s ease;
   z-index: 5;
 }
-body[data-state="zoom"] #buttons { opacity: 1; pointer-events: auto; }
 
 .ib {
   width: 28px; height: 28px;
@@ -297,4 +303,20 @@ body[data-state="zoom"] #buttons { opacity: 1; pointer-events: auto; }
   overflow: hidden;
   color: rgba(255, 255, 255, 0.85);
   word-break: break-word;
+}
+/* 通知正文关键词红色高亮（如"关机"） */
+.n-key { color: #ff5b5b; font-weight: 700; }
+
+/* 通知内容文字：开头一次 0.2s 的左右震动提示（ease-out 渐停），轻微模糊字体边缘；
+   震动结束后文字静止清晰可读（标题不抖） */
+@keyframes n-alert-jitter {
+  0%   { filter: blur(0.3px); transform: translateX(0);      text-shadow: 0 0 0 transparent; }
+  20%  { filter: blur(0.9px); transform: translateX(-2.5px); text-shadow: -3px 0 6px rgba(255, 255, 255, 0.25); }
+  40%  { filter: blur(0.7px); transform: translateX(2px);    text-shadow: 2px 0 5px rgba(255, 255, 255, 0.2); }
+  60%  { filter: blur(0.9px); transform: translateX(-1.5px); text-shadow: -2px 0 6px rgba(255, 255, 255, 0.25); }
+  80%  { filter: blur(0.5px); transform: translateX(1px);    text-shadow: 1px 0 4px rgba(255, 255, 255, 0.15); }
+  100% { filter: blur(0.3px); transform: translateX(0);      text-shadow: 0 0 0 transparent; }
+}
+.n-body {
+  animation: n-alert-jitter 0.2s ease-out 1;
 }
