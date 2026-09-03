@@ -19,8 +19,8 @@
 
 从 [Releases](https://github.com/SenbonFanKageyoshi/smart-counter-island/releases) 下载：
 
-- `SmartCounterIsland-Setup-1.3.0.exe` —— 安装版（创建开始菜单/桌面快捷方式）
-- `SmartCounterIsland-1.3.0-portable.exe` —— 便携版（免安装，直接双击运行）
+- `SmartCounterIsland-Setup-1.3.1.exe` —— 安装版（创建开始菜单/桌面快捷方式）
+- `SmartCounterIsland-1.3.1-portable.exe` —— 便携版（免安装，直接双击运行）
 
 程序未做代码签名，Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 

@@ -61,11 +61,21 @@ function trigger(task, now) {
   return 'run';
 }
 
+// 防重复触发：检查粒度 30 秒 < 1 分钟，同一任务同一触发点在同一分钟内可能被检查两次
+// （如 20:00:10 与 20:00:40），记录"已执行的分钟 + 触发点"，同分钟内只执行一次
+let firedMinute = '';
+const firedKeys = new Set();
+
 /**
  * 检查并执行到期任务。execFn 可注入（测试用）：(task, trigger, now) => void
  * 返回本次触发列表：[{ task, trigger }]
  */
 function checkTasks(now, execFn) {
+  const minKey = `${localDate(now)} ${fmtHM(now.getHours() * 60 + now.getMinutes())}`;
+  if (minKey !== firedMinute) {
+    firedMinute = minKey;
+    firedKeys.clear();
+  }
   const st = settings.load();
   const list = Array.isArray(st.tasks) ? st.tasks : [];
   const executed = [];
@@ -74,6 +84,9 @@ function checkTasks(now, execFn) {
   for (const task of list) {
     const tr = trigger(task, now);
     if (!tr) continue;
+    const key = `${task.id}:${tr}`;
+    if (firedKeys.has(key)) continue; // 同一任务同一触发点在同一分钟内只执行一次
+    firedKeys.add(key);
     executed.push({ task, trigger: tr });
     doExec(task, tr, now);
     // 一次性任务：在最终执行点删除（提醒类型在提醒时删除；关机类型在关机时删除）

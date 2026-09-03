@@ -855,6 +855,14 @@ function runTests() {
       const executed12 = tasksMod.checkTasks(tNow12, (t) => fired12.push(t.id));
       ok(`T12 计划任务时间匹配执行 (fired=${fired12.join(',')})`, fired12.includes('t1') && fired12.includes('t3') && !fired12.includes('t2'));
       ok('T12 一次性任务执行后自动删除', !(settings.load().tasks || []).some((t) => t.id === 't3'));
+      // 防重复：30 秒检查粒度下，同一分钟内第二次检查不重复触发（曾同一分钟提醒两次）
+      settings.update({ tasks: [{ id: 'r1', type: 'remind', time: '09:55', days: 'daily', message: '防重复测试', enabled: true }] });
+      const firedA = [];
+      const firedB = [];
+      tasksMod.checkTasks(new Date(2026, 0, 1, 9, 55, 10), (t) => firedA.push(t.id));
+      tasksMod.checkTasks(new Date(2026, 0, 1, 9, 55, 40), (t) => firedB.push(t.id));
+      ok(`T12 同一分钟不重复提醒 (第一次=${firedA.length}, 第二次=${firedB.length})`, firedA.length === 1 && firedB.length === 0);
+      settings.update({ tasks: [] });
       // 周几匹配
       const dow12 = (tNow12.getDay() + 6) % 7;
       const otherDow = (dow12 + 1) % 7;

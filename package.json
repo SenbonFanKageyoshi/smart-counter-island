@@ -1,7 +1,7 @@
 {
   "name": "smart-counter-island",
   "productName": "SmartCounterIsland",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Smart Counter Island —— 教室希沃大屏高考/中考倒数日：iOS 灵动岛风格悬浮窗（Windows 10/11）",
   "main": "src/main/main.js",
   "author": "Smart Counter Island",

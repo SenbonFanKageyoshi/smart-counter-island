@@ -522,6 +522,15 @@ class Island {
       const ptHwnd = this.getHwnd();
       if (ptHwnd && this.probe) this.probe.setMousePassthrough(ptHwnd, wantPT);
     }
+
+    // —— 持续强制置顶：QQ 等应用的弹窗会周期性抢占顶层，每 tick 把小岛拉回最高层 ——
+    if (this.win && !this.win.isDestroyed() && settings.load().ui.alwaysOnTop !== false) {
+      try {
+        this.win.setAlwaysOnTop(true, 'screen-saver');
+      } catch (e) {
+        /* ignore */
+      }
+    }
   }
 
   // ---------------- 系统通知接管 ----------------
