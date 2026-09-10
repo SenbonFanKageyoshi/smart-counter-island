@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('island', {
   onGlassMode: (cb) => ipcRenderer.on('island:glassmode', (_e, m) => cb(m)),
   onBrightness: (cb) => ipcRenderer.on('island:brightness', (_e, d) => cb(d)),
   onNotify: (cb) => ipcRenderer.on('island:notify', (_e, d) => cb(d)),
+  onAnim: (cb) => ipcRenderer.on('island:anim', (_e, d) => cb(d)),
   // 渲染层 → 主进程
   ready: () => ipcRenderer.send('island:ready'),
   action: (a) => ipcRenderer.invoke('island:action', a),

@@ -25,19 +25,50 @@ body[data-ink="light"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.75); 
 /* 无效果模式：黑底白字 */
 body[data-glass="off"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
 
-/* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） ===== */
+/* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） =====
+   #glass 位于 #pill 内部。注意：filter（CSS blur 或液态 SVG 滤镜）会把
+   本元素提升为合成层，Chromium 对合成层后代不应用父元素的 border-radius
+   圆角裁剪（只会矩形裁剪）→ 必须给 #glass 自身加 clip-path 圆角，
+   形状与 #pill 的圆角一致（inset 68px = 玻璃外扩量，回落到 pill 区域）。
+   filter 先渲染、clip-path 后裁，模糊边缘采样不受影响。
+   定位相对 #pill（窗口内 8px）：外扩 (60+8)px ≈ 原窗口坐标 -60px，与主进程
+   background-position（posX-60）对齐保持一致；模糊采样使用元素自身溢出部分。 */
 .glass {
   position: absolute;
-  left: calc(-1 * var(--glass-gap));
-  top: calc(-1 * var(--glass-gap));
-  right: calc(-1 * var(--glass-gap));
-  bottom: calc(-1 * var(--glass-gap));
+  left: calc(-1 * (var(--glass-gap) + 8px));
+  top: calc(-1 * (var(--glass-gap) + 8px));
+  right: calc(-1 * (var(--glass-gap) + 8px));
+  bottom: calc(-1 * (var(--glass-gap) + 8px));
   background-repeat: no-repeat;
-  filter: blur(30px) saturate(1.65) brightness(1.05);
-  opacity: 0.92;
+  /* 兜底（液态滤镜未挂载时）：
+     liquid 模式 = 清晰透亮；capture 模式 = 真实模糊 blur。
+     液态模式正常走内联 url(#lg-filter) 覆盖此值。 */
+  filter: saturate(1.25) brightness(1.06);
+  opacity: 0.96;
   display: none;
   pointer-events: none;
+  /* 自裁剪为与 #pill 相同的圆角形状：从外扩盒内缩 (gap+8)px 即 pill 区域 */
+  clip-path: inset(calc(var(--glass-gap) + 8px) round 13px);
+  transition: clip-path 0.24s ease;
 }
+/* capture（模糊玻璃）模式：真实模糊兜底 */
+body[data-glass="capture"] #glass {
+  filter: blur(30px) saturate(1.65) brightness(1.05);
+  opacity: 0.92;
+}
+/* liquid（液态玻璃）模式：中心必须与原画面一致 → 不额外降低不透明度 */
+body[data-glass="liquid"] #glass {
+  filter: saturate(1.25) brightness(1.06);
+  opacity: 1;
+}
+body[data-state="expanded"] #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 999px); }
+body[data-state="zoom"]     #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 42px); }
+body[data-state="notify"]   #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 24px); }
+
+/* 窗口尺寸动画期间：隐藏真实玻璃层（含高光层），避免液态滤镜/合成层在
+   缩放中逃逸圆角裁剪露出方形模糊边；pill 自身半透明渐变底撑住过渡 */
+body[data-anim="1"] #glass,
+body[data-anim="1"] #glass-tint { display: none !important; }
 
 /* ===== 灵动岛本体 ===== */
 #pill {
@@ -45,6 +76,11 @@ body[data-glass="off"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); 
   left: 8px; top: 8px; right: 8px; bottom: 8px;
   border-radius: 999px; /* 胶囊形（苹果灵动岛）：两侧半圆 */
   overflow: hidden;
+  /* 自身成为合成层：Chromium 只在父层自身合成时，把 border-radius 圆角作为
+     mask 应用到整棵子树（含被 filter 提升为合成层的 #glass）。
+     否则圆角裁剪对合成子层失效 → 玻璃呈方形露出。 */
+  will-change: transform;
+  transform: translateZ(0);
   transition: border-radius 0.24s ease, opacity 0.25s ease, box-shadow 0.24s ease;
   touch-action: none;
   -webkit-user-drag: none;
@@ -88,6 +124,38 @@ body[data-glass="capture"] #pill {
     0 14px 40px rgba(8, 16, 40, 0.28),
     0 4px 12px rgba(8, 16, 40, 0.18);
 }
+/* —— 液态玻璃（liquid）：中心完全平整无着色，直接透出背后原画面；
+      只有边缘一圈折射带 + 1px 锐利边线 + 两端弧线高光。
+      因此背景设为透明、玻璃层不做额外降透明（否则中心画面会变淡，
+      不再是"与原画面一模一样"）。 —— */
+body[data-glass="liquid"] #pill {
+  background: transparent;
+  box-shadow:
+    inset 0 1px 0 rgba(206, 209, 214, 0.62),
+    inset 0 -1px 0 rgba(196, 199, 205, 0.45),
+    inset 1px 0 0 rgba(196, 199, 205, 0.18),
+    inset -1px 0 0 rgba(196, 199, 205, 0.18),
+    inset 0 0 0 1px rgba(200, 203, 208, 0.08);
+}
+
+/* 高光层：液态玻璃的中心保持完全平整清晰，因此此层不铺中心白渐变，
+   只保留边缘 1px 白描边（玻璃实体感的轮廓线）；折射/渗色/边缘高光由液态滤镜提供。
+   显示与 #glass 同步（由渲染器 updateGlassVisibility 控制） */
+.glass-tint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+    inset 0 1px 1px rgba(255, 255, 255, 0.55);
+}
+/* 液态模式：两端弧线高光（3px 贴弧，不向内扩散）——浅灰调，避免纯白过亮 */
+body[data-glass="liquid"] .glass-tint {
+  background:
+    linear-gradient(90deg, rgba(206, 209, 214, 0.24) 0px, transparent 3px),
+    linear-gradient(270deg, rgba(206, 209, 214, 0.24) 0px, transparent 3px);
+}
 
 /* —— 无效果（off）：纯黑底白字；仅当背景全黑时（data-bg=dark）加 1px 纯白边分隔（非发光） —— */
 body[data-glass="off"] #pill {
@@ -111,7 +179,7 @@ body[data-state="strip"][data-strip="black"] #pill {
 body[data-state="strip"][data-strip="black"][data-bg="dark"] #pill {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 0 0 1px rgba(255, 255, 255, 0.85);
+    0 0 0 1px rgba(198, 200, 206, 0.9); /* 浅灰描边（原纯白） */
 }
 
 /* —— 系统通知：纯黑底白字弹窗；背景全黑时加 1px 纯白边 —— */
@@ -186,6 +254,34 @@ body[data-state="notify"] #dnd-bar { display: flex; }
   text-rendering: optimizeLegibility;
   font-variant-numeric: tabular-nums;
   transition: color 0.2s ease;
+}
+
+/* 玻璃模式（中心完全透明、文字直接叠在桌面内容上）→ 加自适应描边提升对比度：
+   暗背景（白字）用深色描边，亮背景（深字）用浅色描边，任何壁纸下都能读清。 */
+body[data-state="expanded"][data-glass="capture"] #content,
+body[data-state="zoom"][data-glass="capture"] #content,
+body[data-state="expanded"][data-glass="liquid"] #content,
+body[data-state="zoom"][data-glass="liquid"] #content {
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.6),
+    0 0 1px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(0, 0, 0, 0.28);
+}
+body[data-state="expanded"][data-glass="capture"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="capture"][data-ink="dark"] #content,
+body[data-state="expanded"][data-glass="liquid"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="liquid"][data-ink="dark"] #content {
+  text-shadow:
+    0 1px 2px rgba(255, 255, 255, 0.92),
+    0 0 1px rgba(255, 255, 255, 0.85),
+    0 0 8px rgba(255, 255, 255, 0.7);
+}
+/* 数字/时间等大字同样描边，避免细笔画被背景吞掉 */
+body[data-glass="liquid"] .e-unit,
+body[data-glass="liquid"] .z-unit,
+body[data-glass="capture"] .e-unit,
+body[data-glass="capture"] .z-unit {
+  text-shadow: inherit;
 }
 
 .empty { font-size: 14px; color: var(--ink-soft); }
@@ -317,6 +413,6 @@ body[data-state="notify"] #dnd-bar { display: flex; }
   80%  { filter: blur(0.5px); transform: translateX(1px);    text-shadow: 1px 0 4px rgba(255, 255, 255, 0.15); }
   100% { filter: blur(0.3px); transform: translateX(0);      text-shadow: 0 0 0 transparent; }
 }
-.n-body {
+.n-body.n-shake {
   animation: n-alert-jitter 0.2s ease-out 1;
 }

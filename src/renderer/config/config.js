@@ -98,11 +98,18 @@ async function init() {
   $('#notifyEnabled').checked = S.smart.notifyEnabled !== false;
   $('#notifyShowSec').value = S.smart.notifyShowSec ?? 8;
   $('#hideOnMaximized').checked = S.smart.hideOnMaximized !== false;
+  $('#hideOnFullscreen').checked = S.smart.hideOnFullscreen !== false;
   $('#expandIdleSec').value = S.smart.expandIdleSec;
   $('#zoomIdleSec').value = S.smart.zoomIdleSec ?? 0;
   $('#zoomEnabled').checked = !!S.smart.zoomEnabled;
   $('#cycleEnabled').checked = !!S.smart.cycleEnabled;
   $('#cycleSec').value = S.smart.cycleSec;
+  // 高级设置
+  $('#animEnabled').checked = S.smart.animEnabled !== false;
+  $('#animFps').value = S.smart.animFps ?? 60;
+  $('#notifyShake').checked = S.smart.notifyShake !== false;
+  $('#bgRefreshSec').value = S.smart.bgRefreshSec ?? 1.6;
+  $('#hoverMargin').value = S.smart.hoverMargin ?? 30;
   const mm = document.querySelector(`input[name="manualMode"][value="${S.manual.mode}"]`);
   if (mm) mm.checked = true;
 
@@ -218,7 +225,7 @@ function renderSchedule() {
         const isTgt = copyMode && copyMode.type === 'week' && copyMode.wi !== wi;
         return `
       <div class="sched-week ${isSrc ? 'is-source' : ''} ${isTgt ? 'is-target' : ''}">
-        <div class="sched-week-head">第 ${wi + 1} 周${isRest ? '（休息周 · 可少排课）' : ''}
+        <div class="sched-week-head">第 ${wi + 1} 周${isRest ? '（休息周）' : ''}
           <button class="btn sched-copy-week" data-wi="${wi}">${isSrc ? '选择目标周…' : '📋 复制此周'}</button>
           ${wi === 0 && cycle > 1 ? '<button class="btn sched-copy-all">📋 复制到所有周</button>' : ''}
         </div>
@@ -385,7 +392,7 @@ function renderTasks() {
   const list = S.tasks || [];
   const box = $('#task-list');
   if (!list.length) {
-    box.innerHTML = '<div class="event-empty">暂无定时任务：可添加定时提醒 / 定时关机 / 运行命令</div>';
+    box.innerHTML = '<div class="event-empty">暂无定时任务</div>';
     return;
   }
   box.innerHTML = list
@@ -397,7 +404,7 @@ function renderTasks() {
         : '';
       const detail = t.type === 'command' ? esc(t.command || '')
         : t.type === 'remind' ? esc(t.message || '')
-        : `提前 ${parseInt(t.remindMin, 10) || 5} 分钟提醒（固定文案）`;
+        : `提前 ${parseInt(t.remindMin, 10) || 5} 分钟提醒`;
       return `
       <div class="task-item ${t.enabled === false ? 'off' : ''}">
         <div class="task-info">
@@ -470,7 +477,7 @@ function renderEvents() {
   const list = S.events || [];
   const box = $('#event-list');
   if (!list.length) {
-    box.innerHTML = '<div class="event-empty">暂无事件，点击「添加事件」创建（如：高考、中考、期末考试）</div>';
+    box.innerHTML = '<div class="event-empty">暂无事件</div>';
     return;
   }
   box.innerHTML = list
@@ -478,14 +485,15 @@ function renderEvents() {
       const { ms, d } = daysLeft(e.date);
       const past = ms <= 0;
       return `
-      <div class="event-item ${e.enabled === false ? 'off' : ''}">
-        <div class="e-emoji">${esc(e.emoji || '⏰')}</div>
+      <div class="event-item ${e.enabled === false ? 'off' : ''} ${e.pinned ? 'pinned' : ''}">
+        <div class="e-emoji">${e.pinned ? '📌 ' : ''}${esc(e.emoji || '⏰')}</div>
         <div class="e-info">
           <div class="e-name">${esc(e.name)}</div>
           <div class="e-date">${fmtDateCN(e.date)}</div>
         </div>
         <div class="e-days ${past ? 'past' : ''}">${past ? '已过 ' + d + ' 天' : '剩余 ' + d + ' 天'}</div>
         <div class="e-ops">
+          <button class="btn ${e.pinned ? 'primary' : ''}" data-act="pin" data-id="${esc(e.id)}" title="置顶：固定显示在灵动岛和横幅上">${e.pinned ? '取消置顶' : '置顶'}</button>
           <button class="btn" data-act="toggle" data-id="${esc(e.id)}">${e.enabled === false ? '启用' : '停用'}</button>
           <button class="btn" data-act="edit" data-id="${esc(e.id)}">编辑</button>
           <button class="btn danger" data-act="del" data-id="${esc(e.id)}">删除</button>
@@ -514,6 +522,12 @@ $('#event-list').addEventListener('click', async (e) => {
     toast('已删除');
   } else if (btn.dataset.act === 'edit') {
     openEditor(ev);
+  } else if (btn.dataset.act === 'pin') {
+    // 置顶互斥：只有一个事件置顶（决定灵动岛/横幅显示哪个事件）
+    const next = (S.events || []).map((x) => ({ ...x, pinned: x.id === id && !ev.pinned }));
+    S = await window.config.update({ events: next });
+    renderEvents();
+    toast(ev.pinned ? '已取消置顶' : '已置顶');
   }
 });
 
@@ -593,11 +607,17 @@ bind('#smartEnabled', (el) => ({ smart: { enabled: el.checked } }));
 bind('#notifyEnabled', (el) => ({ smart: { notifyEnabled: el.checked } }));
 bind('#notifyShowSec', (el) => ({ smart: { notifyShowSec: Math.max(2, parseInt(el.value, 10) || 8) } }));
 bind('#hideOnMaximized', (el) => ({ smart: { hideOnMaximized: el.checked } }));
+bind('#hideOnFullscreen', (el) => ({ smart: { hideOnFullscreen: el.checked } }));
 bind('#expandIdleSec', (el) => ({ smart: { expandIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#zoomIdleSec', (el) => ({ smart: { zoomIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#zoomEnabled', (el) => ({ smart: { zoomEnabled: el.checked } }));
 bind('#cycleEnabled', (el) => ({ smart: { cycleEnabled: el.checked } }));
 bind('#cycleSec', (el) => ({ smart: { cycleSec: Math.max(2, parseInt(el.value, 10) || 6) } }));
+bind('#animFps', (el) => ({ smart: { animFps: Math.max(20, Math.min(120, parseInt(el.value, 10) || 60)) } }));
+bind('#animEnabled', (el) => ({ smart: { animEnabled: el.checked } }));
+bind('#notifyShake', (el) => ({ smart: { notifyShake: el.checked } }));
+bind('#bgRefreshSec', (el) => ({ smart: { bgRefreshSec: Math.max(0.5, Math.min(10, parseFloat(el.value) || 1.6)) } }));
+bind('#hoverMargin', (el) => ({ smart: { hoverMargin: Math.max(6, Math.min(120, parseInt(el.value, 10) || 30)) } }));
 bind('#scheduleEnabled', (el) => ({ schedule: { enabled: el.checked } }));
 
 document.querySelectorAll('input[name="manualMode"]').forEach((r) =>

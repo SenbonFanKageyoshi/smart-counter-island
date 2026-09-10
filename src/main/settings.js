@@ -69,13 +69,19 @@ const DEFAULTS = {
     hideOnFullscreen: true, // 全屏授课时自动收成细条
     hideOnMaximized: true,  // 前台窗口最大化时保持细条（不展开遮挡）
     expandIdleSec: 4,       // 无操作多少秒后展开为横幅（默认窗口）
-    zoomIdleSec: 15,        // 无操作多少秒后自动弹出大屏（0 = 不自动；非全屏/非最大化时）
+    zoomIdleSec: 15,        // 横幅展开后再闲置多少秒自动弹出大屏（0 = 不自动；非全屏/非最大化时）
     zoomEnabled: true,      // 允许大屏（手动/拖拽/自动）
     cycleEnabled: false,    // 放大时轮播多个事件
     cycleSec: 6,
     // 系统通知接管
     notifyEnabled: true,    // 检测系统通知并在小岛显示
     notifyShowSec: 8,       // 通知显示时长（秒）
+    // 高级设置
+    animFps: 60,            // 窗口动画帧率（20-120；受系统定时器精度影响，>60 提升有限）
+    animEnabled: true,      // 状态切换窗口动画开关（关闭 = 瞬间切换，低配友好）
+    notifyShake: true,      // 通知正文开头 0.2s 震动特效
+    bgRefreshSec: 1.6,      // 背景亮度/毛玻璃刷新间隔（秒；灵动岛自动用约 1.6 倍）
+    hoverMargin: 30,        // 鼠标悬停保护范围（px）：光标在此范围内不因闲置展开
   },
   schedule: {
     enabled: false,         // 时间表（上下课时间）总开关

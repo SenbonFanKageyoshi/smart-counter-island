@@ -38,6 +38,7 @@ function decideState(input) {
     idleMs, occluded, maximized, overPill, state,
     mode, smart, hideOnMaximized,
     expandIdleSec, zoomIdleSec, zoomAllowed, zoomCooldown, holding, hasCountdown,
+    expandedSinceMs = 0, // 横幅（expanded）已持续展示的毫秒数；非横幅状态为 0
   } = input;
 
   // 手动操作保持期：优先于一切（否则手动放大的大屏会被立刻拉回）
@@ -68,10 +69,14 @@ function decideState(input) {
     return 'strip';
   }
 
-  // 非全屏、非最大化时可按闲置时间自动弹出大屏（0 = 不自动；默认窗口层级：先横幅后大屏）；
-  // 操作后 zoomCooldown 期间不自动弹大屏（避免"收起后又马上弹出"）
-  if (zoomIdleSec > 0 && zoomAllowed && !zoomCooldown && idleMs >= zoomIdleSec * 1000) {
-    return 'zoom';
+  // 非全屏、非最大化时可按闲置时间自动弹出大屏（0 = 不自动）。
+  // 层级：先横幅（expanded），横幅已持续展示 zoomIdleSec 秒后才自动弹大屏；
+  // 已在大屏（zoom）且继续闲置 → 保持大屏；操作后 zoomCooldown 期间不自动弹大屏
+  // （避免"收起后又马上弹出"）
+  if (zoomIdleSec > 0 && zoomAllowed && !zoomCooldown) {
+    const zoomIdleMs = zoomIdleSec * 1000;
+    if (state === 'zoom' && idleMs >= zoomIdleMs) return 'zoom';
+    if (state === 'expanded' && expandedSinceMs >= zoomIdleMs && idleMs >= zoomIdleMs) return 'zoom';
   }
 
   // 无操作（闲置 expandIdleSec 秒）→ 横幅；有操作 → 灵动岛
@@ -106,10 +111,13 @@ class Island {
     this.lastAutoSwitch = 0;  // 上次自动状态切换时刻（去抖，防止窗口"跳舞"）
     this.lastOverPill = false; // overPill 滞回记忆（光标在边界抖动时不反复切换）
     this.holdUntil = 0;       // 手动操作保持期截止时间（毫秒时间戳）
+    this.expandedAt = 0;      // 最近一次进入横幅（expanded）的时刻（自动弹大屏从横幅展开后计时）
     this.gestureAt = 0;       // 上次拖放手势时刻（防触摸屏松手误触）
     this.capturing = false;   // 截屏防重入（防止并发截屏导致卡顿）
     this.lastBrightness = 0.5; // 最近一次背景亮度（0-1，文字颜色适配用）
     this.regionApplied = false; // 圆角区域是否已成功应用（探针就绪后重试）
+    this.excludeApplied = false; // 截屏排除自身是否已设置（探针就绪后重试）
+    this.autoHidden = false;     // 智能隐藏：全屏时窗口是否已自动隐藏
     this.displaysBound = false;
     // 系统通知接管
     this.notifyPrevState = 'strip'; // 显示通知前的状态（收起后返回）
@@ -237,12 +245,12 @@ class Island {
     return { x, y, width: w, height: h };
   }
 
-  /** 获取小岛窗口 HWND（数字） */
+  /** 获取小岛窗口 HWND（十进制字符串，BigInt 精确转出，避免 Number 丢精度） */
   getHwnd() {
     if (!this.win || this.win.isDestroyed()) return null;
     try {
       const buf = this.win.getNativeWindowHandle();
-      return buf.readBigUInt64LE ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
+      return buf.readBigUInt64LE ? buf.readBigUInt64LE(0).toString() : String(buf.readUInt32LE(0));
     } catch (e) {
       return null;
     }
@@ -285,8 +293,38 @@ class Island {
     }
   }
 
+  /** 窗口尺寸变化后立即刷新玻璃背景图：动画期间 captureOnce 被 animating 跳过，
+      若等常规循环（1.6s）或 setState 的 250ms 定时，玻璃会短暂显示旧尺寸/旧位置
+      的截图（与窗口错位的"方形模糊"）。这里在尺寸稳定后立刻抓一次。 */
+  refreshGlassAfterResize() {
+    if (!this.win || this.win.isDestroyed()) return;
+    this.send('island:anim', { on: false });
+    // 延迟几毫秒等 setBounds/region 生效，再抓新位置截屏
+    setTimeout(() => {
+      if (this.quitting || !this.win || this.win.isDestroyed()) return;
+      this.captureOnce().catch(() => {});
+    }, 30);
+  }
+
   animateBounds(target) {
     if (!this.win || this.win.isDestroyed()) return;
+    const st = settings.load();
+    // 动画期间隐藏真实玻璃层（液态滤镜/合成层在窗口缩放中会逃逸 CSS 圆角裁剪，
+    // 露出方形模糊边）；pill 自带半透明渐变底，150ms 过渡观感干净，
+    // 动画结束恢复玻璃并重建滤镜（island:anim 信号驱动渲染层）。
+    this.send('island:anim', { on: true });
+    // 高级设置：关闭动画 = 直接切换
+    if (st.smart.animEnabled === false) {
+      try {
+        this.win.setBounds(target);
+      } catch (e) {
+        /* ignore */
+      }
+      this.animating = false;
+      this.applyRegion();
+      this.refreshGlassAfterResize();
+      return;
+    }
     const cur = this.win.getBounds();
     if (this.animTimer) clearTimeout(this.animTimer);
     this.animating = true;
@@ -297,8 +335,11 @@ class Island {
     } catch (e) {
       /* ignore */
     }
-    const steps = 5;
-    const dur = 110;
+    // 帧率可调（高级设置 animFps）：每帧间隔 = 1000/fps，总时长 150ms
+    const fpsCfg = Math.max(20, Math.min(120, parseInt(st.smart.animFps, 10) || 60));
+    const dur = 150;
+    const interval = Math.max(8, Math.round(1000 / fpsCfg));
+    const steps = Math.max(4, Math.round(dur / interval));
     let i = 0;
     const step = () => {
       i += 1;
@@ -315,11 +356,12 @@ class Island {
         /* ignore */
       }
       if (i < steps) {
-        this.animTimer = setTimeout(step, dur / steps);
+        this.animTimer = setTimeout(step, interval);
       } else {
         this.animTimer = null;
         this.animating = false;
         this.applyRegion(); // 尺寸稳定后再设置圆角区域（物理像素，外扩防锯齿）
+        this.refreshGlassAfterResize();
       }
     };
     step();
@@ -333,6 +375,7 @@ class Island {
     const opacity = st.ui.opacity[state] ?? 0.92;
     const target = this.computeBounds(state, this.islandDisplay());
     this.state = state;
+    if (state === 'expanded') this.expandedAt = Date.now(); // 横幅展开时刻（大屏计时起点）
     this.currentOpacity = opacity;
     this.animateBounds(target);
     this.applyRegion();
@@ -383,6 +426,7 @@ class Island {
         cycleSec: st.smart.cycleSec,
         classical: !!st.ui.classical,
         stripStyle: st.ui.stripStyle === 'glass' ? 'glass' : 'black',
+        notifyShake: st.smart.notifyShake !== false,
       },
     });
   }
@@ -433,6 +477,27 @@ class Island {
     }
     this.fullscreen = occluded; // 全屏锁定：不允许横幅/倒计时窗口（仅灵动岛）
 
+    // —— 智能隐藏：全屏授课/看视频/演示时彻底隐藏窗口（不只是收成小条），
+    //    退出全屏自动恢复。窗口隐藏期间也跳过截屏循环（省资源）。
+    //    可在配置页关闭该行为（关闭后仅收成小条 + 鼠标穿透）。
+    const wantAutoHide = !!occluded && s.hideOnFullscreen !== false && mode !== 'pinned';
+    if (wantAutoHide !== this.autoHidden) {
+      this.autoHidden = wantAutoHide;
+      if (this.win && !this.win.isDestroyed()) {
+        try {
+          if (wantAutoHide) {
+            this.win.hide();
+          } else {
+            this.win.showInactive();
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      }
+    }
+    // 注意：不在此处 return —— 状态机与鼠标穿透仍需正常运行
+    //（采样由 captureOnce 内部根据 autoHidden 自行跳过）。
+
     // —— 光标：用光标所在显示器换算 DIP（混合 DPI 时更准确）——
     let cursorDIP = null;
     if (p) {
@@ -441,19 +506,21 @@ class Island {
     }
 
     const cx = b.x + b.width / 2;
-    // overPill 滞回：进入判定宽松（±30px，覆盖小岛附近悬浮），退出判定收紧（±5px）
+    // overPill 滞回：进入/退出范围可调（高级设置 hoverMargin），覆盖小岛附近悬浮
+    const hm = Math.max(6, Math.min(120, parseInt(s.hoverMargin, 10) || 30));
     const overEnter =
       cursorDIP &&
-      cursorDIP.x >= b.x - 30 &&
-      cursorDIP.x <= b.x + b.width + 30 &&
-      cursorDIP.y >= b.y - 30 &&
-      cursorDIP.y <= b.y + b.height + 30;
+      cursorDIP.x >= b.x - hm &&
+      cursorDIP.x <= b.x + b.width + hm &&
+      cursorDIP.y >= b.y - hm &&
+      cursorDIP.y <= b.y + b.height + hm;
+    const exitM = Math.max(2, Math.round(hm / 6));
     const overExit =
       cursorDIP &&
-      cursorDIP.x >= b.x + 5 &&
-      cursorDIP.x <= b.x + b.width - 5 &&
-      cursorDIP.y >= b.y + 5 &&
-      cursorDIP.y <= b.y + b.height - 5;
+      cursorDIP.x >= b.x + exitM &&
+      cursorDIP.x <= b.x + b.width - exitM &&
+      cursorDIP.y >= b.y + exitM &&
+      cursorDIP.y <= b.y + b.height - exitM;
     const overPill = overEnter || (this.lastOverPill && overExit);
     this.lastOverPill = !!overPill;
 
@@ -502,10 +569,16 @@ class Island {
       zoomCooldown: Date.now() < this.zoomCooldownUntil,
       holding,
       hasCountdown: this.hasCountdown(),
+      expandedSinceMs: this.state === 'expanded' ? Math.max(0, Date.now() - this.expandedAt) : 0,
     });
     // 探针就绪后重试圆角区域（启动初期探针未就绪时曾回退为矩形，避免遮罩残留）
     if (!this.regionApplied && this.probe && this.probe.ready && this.probe.regionFileConsumed()) {
       this.applyRegion();
+    }
+    // 截屏排除自身：读回探针设置结果；未确认生效时每次 tick 重发命令
+    this.checkExclude();
+    if (!this.excludeApplied && this.probe && this.probe.ready) {
+      this.applyExclude();
     }
     if (next && next !== this.state) {
       // 自动切换去抖：状态变化后 1 秒内不再自动切换，避免窗口"跳舞"
@@ -797,7 +870,8 @@ class Island {
     const m = settings.load().ui.glassMode;
     if (m === 'off') return 'off';
     if (m === 'fake') return 'fake';
-    return 'capture'; // auto / capture
+    if (m === 'liquid') return 'liquid';
+    return 'capture'; // auto / capture（模糊玻璃）
   }
 
   /** 亮度/截屏循环：始终运行（文字颜色自动适配 + 真实毛玻璃） */
@@ -818,7 +892,12 @@ class Island {
           this.send('island:glassmode', { mode: 'fake' });
         }
       }
-      this.glassTimer = setTimeout(loop, this.animating || this.dragging ? 800 : this.state === 'strip' ? 2500 : 1600);
+      // 刷新间隔可调（高级设置 bgRefreshSec）；动画/拖拽期间加速到 800ms；灵动岛自动放宽约 1.6 倍省资源
+      const baseMs = Math.max(0.4, Math.min(10, parseFloat(settings.load().smart.bgRefreshSec) || 1.6)) * 1000;
+      this.glassTimer = setTimeout(
+        loop,
+        this.animating || this.dragging ? 800 : this.state === 'strip' ? Math.round(baseMs * 1.6) : Math.round(baseMs)
+      );
     };
     loop();
   }
@@ -830,8 +909,8 @@ class Island {
   }
 
   async captureOnce() {
-    // strip（灵动岛）也持续检测背景亮度（白边判定依据"正下方全黑"），只是不发玻璃图
     if (this.capturing || this.dragging || this.animating) return;
+    if (this.autoHidden) return; // 智能隐藏期间（全屏）无需采样
     this.capturing = true;
     try {
       const st = settings.load();
@@ -839,11 +918,13 @@ class Island {
       const disp = this.islandDisplay();
       const bw = disp.bounds.width;
       const bh = disp.bounds.height;
-      const thumbW = Math.max(320, Math.round(bw / 2));
-      const thumbH = Math.max(180, Math.round(bh / 2));
+      // 缩略图请求「屏幕物理像素尺寸」= 1:1，保证玻璃背景与真实画面同样清晰
+      // （若只请求半分辨率，放大后中心区域会发虚，看着就不像"原画"）
+      const physW = disp.size ? disp.size.width : Math.round(bw * (disp.scaleFactor || 1));
+      const physH = disp.size ? disp.size.height : Math.round(bh * (disp.scaleFactor || 1));
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
-        thumbnailSize: { width: thumbW, height: thumbH },
+        thumbnailSize: { width: Math.max(320, physW), height: Math.max(180, physH) },
       });
       const src =
         sources.find((s) => String(s.display_id) === String(disp.id)) ||
@@ -856,20 +937,49 @@ class Island {
       const rx = size.width / bw;
       const ry = size.height / bh;
 
-      // 计算小岛背后区域的平均亮度（截屏已通过 SetWindowDisplayAffinity 排除自身）
+      // 计算小岛背后区域的平均亮度
       const brightness = this.computeBrightness(img, b, disp, rx, ry);
       this.lastBrightness = brightness;
       this.send('island:brightness', { brightness });
 
-      // 真实毛玻璃：仅 expanded/zoom 状态且玻璃模式为 capture 时发送模糊图
-      if (mode === 'capture' && (this.state === 'expanded' || this.state === 'zoom')) {
-        this.send('island:glass', {
-          dataUrl: img.toDataURL(),
-          screenW: size.width,
-          screenH: size.height,
-          posX: Math.round((b.x - disp.bounds.x) * rx),
-          posY: Math.round((b.y - disp.bounds.y) * ry),
-        });
+      // 玻璃图：仅 expanded/zoom 状态且玻璃模式为 capture/liquid 时发送。
+      // 只裁剪窗口覆盖区域（外扩 MARGIN 采样余量），不发全屏图。
+      if ((mode === 'capture' || mode === 'liquid') && (this.state === 'expanded' || this.state === 'zoom')) {
+        const MARGIN = 60; // 外扩采样余量（DIP）：与 CSS --glass-gap 一致，#glass 相对窗口外扩这么多
+        // #glass 元素在屏幕上的左上角（窗口左上再向左上外扩 MARGIN）
+        const glassLeftDIP = b.x - MARGIN;
+        const glassTopDIP = b.y - MARGIN;
+        const sx0 = Math.floor((b.x - disp.bounds.x - MARGIN) * rx);
+        const sy0 = Math.floor((b.y - disp.bounds.y - MARGIN) * ry);
+        const sx1 = Math.ceil((b.x - disp.bounds.x + b.width + MARGIN) * rx);
+        const sy1 = Math.ceil((b.y - disp.bounds.y + b.height + MARGIN) * ry);
+        // 屏幕边缘处会被裁剪（窗口贴边时外扩区在屏幕外）→ 必须把实际裁剪起点
+        // 回传给渲染层，否则图片按「完整外扩区」铺会产生整体错位
+        const cx0 = Math.max(0, sx0);
+        const cy0 = Math.max(0, sy0);
+        const cx1 = Math.min(size.width, sx1);
+        const cy1 = Math.min(size.height, sy1);
+        if (cx1 > cx0 && cy1 > cy0) {
+          let cropped;
+          try {
+            cropped = img.crop({ x: cx0, y: cy0, width: cx1 - cx0, height: cy1 - cy0 });
+          } catch (e) {
+            cropped = null;
+          }
+          if (cropped && !cropped.isEmpty()) {
+            // dispW/dispH：裁剪图的屏幕 DIP 尺寸；
+            // offX/offY：裁剪图左上角相对 #glass 元素左上角的偏移（贴边被裁时 > 0）
+            const cropLeftDIP = cx0 / rx + disp.bounds.x;
+            const cropTopDIP = cy0 / ry + disp.bounds.y;
+            this.send('island:glass', {
+              dataUrl: cropped.toDataURL(),
+              dispW: Math.round((cx1 - cx0) / rx),
+              dispH: Math.round((cy1 - cy0) / ry),
+              offX: Math.round(cropLeftDIP - glassLeftDIP),
+              offY: Math.round(cropTopDIP - glassTopDIP),
+            });
+          }
+        }
       }
       this.glassFail = 0;
     } finally {
@@ -939,6 +1049,7 @@ class Island {
     const st = settings.load();
     const disp = this.positionDisplay();
     const bounds = this.computeBounds('expanded', disp); // 启动即放大版（默认窗口）
+    this.expandedAt = Date.now(); // 窗口以横幅形态创建：大屏计时从此刻起
     this.win = new BrowserWindow({
       ...bounds,
       show: false,
@@ -963,6 +1074,24 @@ class Island {
       },
     });
     this.win.setAlwaysOnTop(true, 'screen-saver');
+    // 截屏排除自身：Electron 的 setContentProtection 在 Windows 上即
+    // SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)，由主进程（窗口所属进程）
+    // 调用才有效——探针子进程跨进程调用会失败。效果：本窗口在屏幕捕获中"消失"，
+    // 截屏拍到的是窗口背后的真实像素。一次设置持续生效，无需每次截屏隐藏窗口，
+    // 因此不会闪烁，也不会出现自己的重影。
+    try {
+      this.win.setContentProtection(true);
+    } catch (e) {
+      console.error('[island] setContentProtection 失败:', e.message);
+    }
+    this.win.on('show', () => {
+      // 窗口重新 show 后重新断言（部分系统组合会重置该标志）
+      try {
+        this.win.setContentProtection(true);
+      } catch (e) {
+        /* ignore */
+      }
+    });
     this.win.on('closed', () => {
       this.win = null;
       if (!this.quitting) {
@@ -978,14 +1107,30 @@ class Island {
     await this.win.loadFile(path.join(__dirname, '..', 'renderer', 'island', 'index.html'));
     this.win.showInactive();
     // 截屏排除自身（WDA_EXCLUDEFROMCAPTURE，Win10 2004+ 支持）
-    const hwnd = this.getHwnd();
-    if (hwnd && this.probe) this.probe.setExcludeFromCapture(hwnd);
+    this.applyExclude();
     this.applyRegion();
     this.broadcastEvents();
     this.sendState();
     this.tickTimer = setInterval(() => this.tick(), 350);
     this.applyGlass();
     this.bindDisplayEvents();
+  }
+
+  /** 截屏排除自身由 Electron 的 win.setContentProtection(true) 在主进程内完成
+      （见 create()）。探针子进程跨进程调用 SetWindowDisplayAffinity 会失败，
+      故此处保留为兼容性空实现（历史调用点仍安全）。 */
+  applyExclude() {
+    if (!this.win || this.win.isDestroyed()) return;
+    try {
+      this.win.setContentProtection(true);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  /** 由 Electron API 直接管理，无需回读；保留接口以兼容历史调用 */
+  checkExclude() {
+    this.excludeApplied = true;
   }
 
   destroy() {

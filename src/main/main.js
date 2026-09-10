@@ -8,6 +8,14 @@ const island = require('./island');
 const config = require('./config');
 const tasks = require('./tasks');
 
+// 控制台管道被关闭时（例如从 cmd 重定向运行后关闭窗口）写 stdout 会抛 EPIPE，
+// 未处理时会弹“A JavaScript error occurred in the main process”崩溃窗。挂上空监听即可静默。
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') {
+    stream.on('error', () => {});
+  }
+}
+
 // 统一 userData 目录名（必须在 ready 前调用）
 app.setName('SmartCounterIsland');
 
@@ -74,6 +82,87 @@ async function main() {
   else if (argv.includes('--shot')) runShots();
   else if (argv.includes('--smoke')) runSmoke();
   else if (argv.includes('--demo-notify')) runDemoNotify();
+  else if (argv.some((a) => a.startsWith('--diag'))) runDiag();
+}
+
+// ---------------- 玻璃链路诊断（真机排查用） ----------------
+// 运行：SmartCounterIsland.exe --diag（先退出正在运行的程序，单实例锁会挡）
+// 等待数秒后把玻璃模式/截屏/渲染层各环节状态写入 %TEMP%\sci-diag-<pid>.json 并退出
+
+async function runDiag() {
+  const fs = require('fs');
+  console.log('[diag] start（等待玻璃循环运行…）');
+  // 诊断玻璃模式：--diag=liquid 诊断液态，否则 capture
+  const diagArg = process.argv.find((a) => a.startsWith('--diag'));
+  const diagGlass = diagArg && diagArg.includes('liquid') ? 'liquid' : 'capture';
+  settings.update({ ui: { glassMode: diagGlass } });
+  island.applyGlass();
+  await new Promise((r) => setTimeout(r, 2500));
+  // 强制切到横幅（玻璃应显示的状态）等待截屏推送，再采集
+  try {
+    island.setPaused(true);
+    island.manualState('expanded', 8000);
+    island.animating = false;
+    await new Promise((r) => setTimeout(r, 1500));
+    island.animating = false;
+  } catch (e) {
+    console.error('[diag] 切横幅失败:', e.message);
+  }
+  const out = {};
+  out.pid = process.pid;
+  out.version = app.getVersion();
+  out.settings_glassMode = settings.load().ui.glassMode;
+  out.smart_zoomEnabled = settings.load().smart.zoomEnabled;
+  try {
+    out.effectiveGlassMode = island.effectiveGlassMode();
+    out.glassFailed = island.glassFailed;
+    out.glassFailCount = island.glassFail;
+    out.state = island.state;
+    out.lastBrightness = island.lastBrightness;
+    out.regionApplied = island.regionApplied;
+    out.excludeApplied = island.excludeApplied;
+    out.hwnd = island.getHwnd ? String(island.getHwnd()) : 'n/a';
+    out.bounds = island.win ? island.win.getBounds() : null;
+  } catch (e) {
+    out.mainErr = String(e);
+  }
+  try {
+    const dom = await island.win.webContents.executeJavaScript(`(() => {
+      const g = document.getElementById('glass');
+      const t = document.getElementById('glass-tint');
+      const p = document.getElementById('pill');
+      const r = (el) => el ? Math.round(el.getBoundingClientRect().width) + 'x' + Math.round(el.getBoundingClientRect().height) : 'no-el';
+      return {
+        dataGlass: document.body.dataset.glass,
+        dataState: document.body.dataset.state,
+        dataAnim: document.body.dataset.anim,
+        hasLiquidGlass: !!window.LiquidGlass,
+        glassDisplay: g ? getComputedStyle(g).display : 'no-el',
+        glassRect: r(g),
+        glassBgLen: g ? (g.style.backgroundImage || '').length : 0,
+        glassFilter: g ? (g.style.filter || getComputedStyle(g).filter || '') : '',
+        glassClip: g ? getComputedStyle(g).clipPath : '',
+        tintDisplay: t ? getComputedStyle(t).display : 'no-el',
+        hasLgSvg: !!document.getElementById('lg-svg'),
+        dispHrefLen: (document.getElementById('lg-disp') && document.getElementById('lg-disp').getAttribute('href') || '').length,
+        bleedHrefLen: (document.getElementById('lg-bleed') && document.getElementById('lg-bleed').getAttribute('href') || '').length,
+        specHrefLen: (document.getElementById('lg-spec') && document.getElementById('lg-spec').getAttribute('href') || '').length,
+        pillRect: p ? (() => { const b = p.getBoundingClientRect(); return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; })() : null,
+      };
+    })()`);
+    out.dom = dom;
+  } catch (e) {
+    out.domErr = String(e && e.stack ? e.stack : e);
+  }
+  const file = path.join(os.tmpdir(), `sci-diag-${process.pid}.json`);
+  try {
+    fs.writeFileSync(file, JSON.stringify(out, null, 2), 'utf8');
+    console.log('[diag] 结果已写入:', file);
+  } catch (e) {
+    console.error('[diag] 写文件失败:', e.message);
+  }
+  console.log('[diag]', JSON.stringify(out));
+  app.exit(0);
 }
 
 // ---------------- 通知演示模式（只测通知，延长显示时间便于观察抖动特效） ----------------
@@ -94,12 +183,16 @@ async function runDemoNotify() {
   app.exit(0);
 }
 
-/** 应用开机自启设置（Electron 原生支持，写 HKCU Run 键） */
+/** 应用开机自启设置（Electron 原生支持，写 HKCU Run 键）。
+    便携版运行时被 NSIS 解压到 %TEMP% 随机目录执行，process.execPath 指向
+    临时路径，注册了也起不来；electron-builder 为便携版注入
+    PORTABLE_EXECUTABLE_FILE（原始 exe 路径），自启应指向它。 */
 function applyAutoStart() {
   try {
+    const portableExe = process.env.PORTABLE_EXECUTABLE_FILE;
     app.setLoginItemSettings({
       openAtLogin: !!settings.load().ui.autoStart,
-      path: process.execPath,
+      path: portableExe || process.execPath,
     });
   } catch (e) {
     console.error('[main] 开机自启设置失败:', e.message);
@@ -139,9 +232,28 @@ async function runShots() {
   const img2 = await island.win.webContents.capturePage();
   fs.writeFileSync(path.join(outDir, 'island-zoom-glass.png'), img2.toPNG());
   const zdom = await island.win.webContents.executeJavaScript(
-    `({ text: document.getElementById('content').innerText.trim().slice(0, 40), zNum: document.querySelector('.z-num') ? getComputedStyle(document.querySelector('.z-num')).fontSize : 'n/a', zMidH: document.querySelector('.z-mid') ? Math.round(document.querySelector('.z-mid').getBoundingClientRect().height) : 0, zCardH: document.querySelector('.z-card') ? Math.round(document.querySelector('.z-card').getBoundingClientRect().height) : 0 })`
+    `({ text: document.getElementById('content').innerText.trim().slice(0, 40), zNum: document.querySelector('.z-num') ? getComputedStyle(document.querySelector('.z-num')).fontSize : 'n/a', zMidH: document.querySelector('.z-mid') ? Math.round(document.querySelector('.z-mid').getBoundingClientRect().height) : 0, zCardH: document.querySelector('.z-card') ? Math.round(document.querySelector('.z-card').getBoundingClientRect().height) : 0, glassParent: (document.getElementById('glass').parentElement || {}).id, glassDisp: getComputedStyle(document.getElementById('glass')).display, tintDisp: getComputedStyle(document.getElementById('glass-tint')).display, pillOverflow: getComputedStyle(document.getElementById('pill')).overflow, pillRadius: getComputedStyle(document.getElementById('pill')).borderRadius, glassImg: (document.getElementById('glass').style.backgroundImage || '').slice(0, 40), lgFilter: (document.getElementById('glass').style.filter || '').slice(0, 40), lgSvg: !!document.getElementById('lg-svg') })`
   );
   console.log('[shot] zoom-glass dom=', JSON.stringify(zdom), 'bounds=', JSON.stringify(island.win.getBounds()));
+  // 液态玻璃滤镜构造验证（不依赖桌面截屏源）：强制调用 apply 并检查 SVG 滤镜是否就位
+  const lgdom = await island.win.webContents.executeJavaScript(`(() => {
+    if (!window.LiquidGlass) return { err: 'no module' };
+    const g = document.getElementById('glass');
+    const p = document.getElementById('pill');
+    // 本机无桌面截屏源 → 玻璃未激活(display:none)；先强制显示再量尺寸
+    g.style.display = 'block';
+    document.body.dataset.glass = 'capture';
+    const gr = g.getBoundingClientRect();
+    const pr = p.getBoundingClientRect();
+    const cs = getComputedStyle(p);
+    const radius = Math.min(parseFloat(cs.borderRadius) || 0, Math.min(pr.width, pr.height) / 2);
+    const rect = { x: pr.left - gr.left, y: pr.top - gr.top, w: pr.width, h: pr.height, r: Math.max(1, radius) };
+    const ok = window.LiquidGlass.apply('lg-filter', rect);
+    const svg = document.getElementById('lg-svg');
+    const disp = document.getElementById('lg-disp');
+    return { ok, rect: JSON.stringify(rect), glassRect: gr.width + 'x' + gr.height, hasSvg: !!svg, svgHtml: svg ? svg.outerHTML.slice(0, 260) : '', filter: g.style.filter, clipPath: getComputedStyle(g).clipPath, dispHref: disp ? (disp.getAttribute('href') || '').slice(0, 30) : '' };
+  })()`);
+  console.log('[shot] liquid-glass dom=', JSON.stringify(lgdom));
   // 系统通知渲染验证
   island.showNotification('测试应用', '这是一条测试通知内容');
   await new Promise((r) => setTimeout(r, 600));
@@ -190,6 +302,87 @@ async function runShots() {
     return { title: r(document.querySelector('.n-title')), body: r(document.querySelector('.n-body')), wrap: r(document.querySelector('.n-wrap')) };
   })()`);
   console.log('[shot] notify long sizes=', JSON.stringify(nlong), 'bounds=', JSON.stringify(island.win.getBounds()));
+  // —— 方形遮罩像素诊断：检查圆角外（窗口角落）是否泄漏非透明内容 ——
+  const cornerCheck = async (label, w, h) => {
+    const img = await island.win.webContents.capturePage();
+    const bmp = img.toBitmap();
+    const sw = img.getSize().width;
+    const sh = img.getSize().height;
+    const px = (x, y) => {
+      const i = (y * sw + x) * 4;
+      return [bmp[i], bmp[i + 1], bmp[i + 2], bmp[i + 3]]; // BGRA
+    };
+    // 窗口内四角附近（pill 内缩 8px，圆角外区域应全透明 alpha=0）
+    const pts = [
+      ['TL', 3, 3], ['TR', w - 4, 3], ['BL', 3, h - 4], ['BR', w - 4, h - 4],
+      ['topEdge', Math.floor(w / 2), 3],
+      ['leftEdge', 3, Math.floor(h / 2)],
+    ];
+    const out = { label, size: sw + 'x' + sh };
+    for (const [n, x, y] of pts) out[n] = px(Math.max(0, Math.min(sw - 1, x)), Math.max(0, Math.min(sh - 1, y)));
+    return out;
+  };
+  // 回到 expanded（胶囊），玻璃强制可见后检查角落
+  island.manualState('expanded', 4000);
+  await new Promise((r) => setTimeout(r, 200));
+  island.animating = false;
+  await island.win.webContents.executeJavaScript(`(() => {
+    const g = document.getElementById('glass');
+    if (g) { g.style.display = 'block'; g.style.backgroundImage = 'linear-gradient(45deg, #ff0000, #00ff00, #0000ff)'; }
+    document.body.dataset.glass = 'capture';
+    document.body.dataset.state = 'expanded';
+    // 走真实液态滤镜路径（region 限定后应无方形外溢）
+    if (window.LiquidGlass) {
+      const p = document.getElementById('pill');
+      const gr = g.getBoundingClientRect();
+      const pr = p.getBoundingClientRect();
+      const cs = getComputedStyle(p);
+      const radius = Math.min(parseFloat(cs.borderRadius) || 0, Math.min(pr.width, pr.height) / 2);
+      window.LiquidGlass.apply('lg-filter', { x: pr.left - gr.left, y: pr.top - gr.top, w: pr.width, h: pr.height, r: Math.max(1, radius) });
+    }
+    return true;
+  })()`);
+  await new Promise((r) => setTimeout(r, 600));
+  const eb = island.win.getBounds();
+  const expCorner = await cornerCheck('expanded-capsule', eb.width, eb.height);
+  console.log('[shot] corner-expanded=', JSON.stringify(expCorner));
+  const expCss = await island.win.webContents.executeJavaScript(`({
+    clip: getComputedStyle(document.getElementById('glass')).clipPath,
+    pillOverflow: getComputedStyle(document.getElementById('pill')).overflow,
+    pillRadius: getComputedStyle(document.getElementById('pill')).borderRadius,
+  })`);
+  console.log('[shot] corner-expanded-css=', JSON.stringify(expCss));
+  // —— 动画中间帧捕获：从 expanded 放大到 zoom，动画中途截屏检查方形 ——
+  island.manualState('expanded', 0);
+  await new Promise((r) => setTimeout(r, 150));
+  island.animating = false;
+  island.setState('zoom'); // 触发动画
+  await new Promise((r) => setTimeout(r, 70)); // 动画中段
+  const midB = island.win.getBounds();
+  const midImg = await island.win.webContents.capturePage();
+  const mbmp = midImg.toBitmap();
+  const msw = midImg.getSize().width;
+  const msh = midImg.getSize().height;
+  const mpx = (x, y) => {
+    const i = (Math.max(0, Math.min(msh - 1, y)) * msw + Math.max(0, Math.min(msw - 1, x))) * 4;
+    return [mbmp[i], mbmp[i + 1], mbmp[i + 2], mbmp[i + 3]];
+  };
+  const midPts = {};
+  for (const [n, dx, dy] of [['TL', 3, 3], ['TR', midB.width - 4, 3], ['BL', 3, midB.height - 4], ['BR', midB.width - 4, midB.height - 4], ['topEdge', Math.floor(midB.width / 2), 3], ['leftEdge', 3, Math.floor(midB.height / 2)], ['center', Math.floor(midB.width / 2), Math.floor(midB.height / 2)]]) {
+    midPts[n] = mpx(dx, dy);
+  }
+  console.log('[shot] mid-anim bounds=', JSON.stringify(midB), 'corner=', JSON.stringify(midPts));
+  const midCss = await island.win.webContents.executeJavaScript(`({
+    state: document.body.dataset.state,
+    pill: (() => { const p = document.getElementById('pill').getBoundingClientRect(); return [Math.round(p.x), Math.round(p.y), Math.round(p.width), Math.round(p.height)]; })(),
+    glassClip: getComputedStyle(document.getElementById('glass')).clipPath,
+    pillRadius: getComputedStyle(document.getElementById('pill')).borderRadius,
+    glassRect: (() => { const g = document.getElementById('glass').getBoundingClientRect(); return [Math.round(g.x), Math.round(g.y), Math.round(g.width), Math.round(g.height)]; })(),
+    glassDisp: getComputedStyle(document.getElementById('glass')).display,
+  })`);
+  console.log('[shot] mid-anim css=', JSON.stringify(midCss));
+  await new Promise((r) => setTimeout(r, 300)); // 等动画结束
+  island.animating = false;
   app.exit(0);
 }
 
@@ -374,12 +567,17 @@ function runTests() {
         idleMs: 0, occluded: false, maximized: false, overPill: false,
         mode: 'auto', smart: true, hideOnMaximized: true,
         expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        state: 'expanded', expandedSinceMs: 0, // 当前处于横幅且刚展开（大屏计时从横幅展开后起算）
       };
       ok('T2 有操作→灵动岛', island.decideState(base) === 'strip');
       ok('T2 闲置5s→默认窗口横幅', island.decideState({ ...base, idleMs: 5000 }) === 'expanded');
       ok('T2 默认窗口固定横幅（不可更改）', island.decideState({ ...base, idleMs: 99999 }) === 'expanded');
-      ok('T2 闲置15s→自动弹出大屏', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 15000 }) === 'zoom');
-      ok('T2 关闭大屏→闲置不弹大屏', island.decideState({ ...base, zoomIdleSec: 15, zoomAllowed: false, idleMs: 99999 }) === 'expanded');
+      ok('T2 横幅展开15s后→自动弹出大屏', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 15000, expandedSinceMs: 15000 }) === 'zoom');
+      ok('T2 横幅刚展开不足15s→暂不弹大屏', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, expandedSinceMs: 5000 }) === 'expanded');
+      ok('T2 细条闲置再久→先展开横幅（层级：横幅后大屏）', island.decideState({ ...base, zoomIdleSec: 15, state: 'strip', idleMs: 99999 }) === 'expanded');
+      ok('T2 已在大屏且继续闲置→保持大屏', island.decideState({ ...base, zoomIdleSec: 15, state: 'zoom', idleMs: 99999 }) === 'zoom');
+      ok('T2 大屏有操作→收回细条', island.decideState({ ...base, state: 'zoom', idleMs: 100 }) === 'strip');
+      ok('T2 关闭大屏→闲置不弹大屏', island.decideState({ ...base, zoomIdleSec: 15, zoomAllowed: false, idleMs: 99999, expandedSinceMs: 99999 }) === 'expanded');
       ok('T2 全屏+闲置15s→仍锁定灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, occluded: true }) === 'strip');
       ok('T2 最大化+闲置15s→保持灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, maximized: true }) === 'strip');
       ok('T2 无计时时间→锁定灵动岛', island.decideState({ ...base, hasCountdown: false, idleMs: 99999 }) === 'strip');
@@ -572,9 +770,12 @@ function runTests() {
       island.animating = false;
       island.lastLi = 1; // 吸收桌面测试数据的 li，避免输入检测误设冷却
       island.zoomCooldownUntil = 0; // 清冷却，验证桌面闲置可自动弹大屏
+      // 模拟：横幅已展开 30 秒（大屏从横幅展开后 idle 15s 才自动弹出）
+      island.state = 'expanded';
+      island.expandedAt = Date.now() - 30000;
       island.tick();
-      // 桌面不锁定：闲置巨大 → 按层级自动弹大屏（15s）而非被"全屏锁定"卡在灵动岛
-      ok(`T9 桌面前台→不锁定（闲置后自动展开，state=${island.state}）`, island.state === 'zoom');
+      // 桌面不锁定：横幅已展示足够久 → 自动弹大屏（层级：横幅后大屏）
+      ok(`T9 桌面前台→不锁定（横幅展开后自动弹大屏，state=${island.state}）`, island.state === 'zoom');
       // 操作后冷却期内：闲置再大也不自动弹大屏（避免收起后马上又弹出）
       island.zoomCooldownUntil = Date.now() + 60000;
       island.animating = false;
@@ -663,13 +864,18 @@ function runTests() {
       island.animating = false;
       island.setZoomWidth(330);
       await sleep(700); // 等渲染器测量上报（250ms）+ 宽度动画（110ms）完成
+      // 测量上报可能在动画后再次到达（如 402→403）触发二次宽度动画；
+      // 等待动画彻底结束再读数，避免读到中间帧
+      const t9Deadline = Date.now() + 3000;
+      while (island.animating && Date.now() < t9Deadline) await sleep(30);
       const zh = Math.max(200, Math.min(420, Math.round(island.islandDisplay().workArea.height / 4))) + 16;
+      const zb = island.win.getBounds();
       ok(
-        `T9 倒计时窗口宽度自适应 (内容宽=${island.zoomWidth}, 窗口=${island.win.getBounds().width}x${island.win.getBounds().height})`,
+        `T9 倒计时窗口宽度自适应 (内容宽=${island.zoomWidth}, 窗口=${zb.width}x${zb.height})`,
         island.zoomWidth > 0 &&
           island.zoomWidth !== Math.round(island.islandDisplay().workArea.height / 4) && // 宽度已随文字变化（非默认正方形）
-          island.win.getBounds().width === island.zoomWidth + 16 &&
-          island.win.getBounds().height === zh
+          Math.abs(zb.width - (island.zoomWidth + 16)) <= 2 && // DWM/物理像素舍入可能差 1px
+          Math.abs(zb.height - zh) <= 2
       );
 
       // —— T10 系统通知接管 + 免打扰 + 时间表 ——
@@ -913,6 +1119,65 @@ function runTests() {
       settings.update({ tasks: [] });
       config.close();
       await sleep(400);
+
+      // —— T13 大窗口轮播切换标题 + 事件置顶 ——
+      // 构造两个未来事件：甲（近）、乙（远）
+      settings.update({
+        events: [
+          { id: 'ev-a', name: '事件甲', date: '2099-05-01T09:00:00', emoji: '🅰️', color: '#4f7cff', enabled: true, pinned: false },
+          { id: 'ev-b', name: '事件乙', date: '2099-08-01T09:00:00', emoji: '🅱️', color: '#4f7cff', enabled: true, pinned: false },
+        ],
+      });
+      island.broadcastEvents();
+      // 轮播标题：开启轮播（2s），进大屏，标题应随事件切换
+      settings.update({ smart: { cycleEnabled: true, cycleSec: 2, zoomIdleSec: 0 } });
+      island.broadcastEvents();
+      island.manualState('zoom', 8000);
+      island.animating = false;
+      await sleep(700);
+      // 连续采样 3.2s（> cycleSec 2s 周期），轮播必然切到两个不同事件
+      const heads = new Set();
+      for (let i = 0; i < 4; i++) {
+        const h = await island.win.webContents.executeJavaScript(`(document.querySelector('.z-label')||{}).textContent || ''`);
+        if (h) heads.add(h);
+        await sleep(800);
+      }
+      const headList = [...heads].join(' | ');
+      ok(`T13 大窗口轮播切换标题 (看到 ${heads.size} 个: ${headList})`, heads.size >= 2);
+      settings.update({ smart: { cycleEnabled: false } });
+      island.broadcastEvents();
+      island.manualState('strip', 0);
+      island.animating = false;
+      // 置顶：乙（较远事件）置顶 → 灵动岛/横幅显示乙（不再显示更近的甲）
+      settings.update({ events: [
+        { id: 'ev-a', name: '事件甲', date: '2099-05-01T09:00:00', emoji: '🅰️', color: '#4f7cff', enabled: true, pinned: false },
+        { id: 'ev-b', name: '事件乙', date: '2099-08-01T09:00:00', emoji: '🅱️', color: '#4f7cff', enabled: true, pinned: true },
+      ] });
+      island.broadcastEvents();
+      island.manualState('expanded', 6000); // 保持期：避免 idle 状态机自动收回
+      island.animating = false;
+      await sleep(500);
+      const pinName = await island.win.webContents.executeJavaScript(`(document.querySelector('.e-name')||{}).textContent || ''`);
+      ok(`T13 置顶事件显示在横幅上 (name=${pinName})`, pinName.includes('事件乙'));
+      island.manualState('strip', 0);
+      island.animating = false;
+      await sleep(300);
+      // 配置页置顶按钮：点击后 settings 里该事件 pinned=true 且互斥（另一事件清空）
+      config.open();
+      await sleep(800);
+      const cw13 = config.getWindow();
+      const js13 = (code) => cw13.webContents.executeJavaScript(code);
+      await js13(`document.querySelector('[data-tab="events"]').click()`);
+      await sleep(300);
+      const pinBtnText = await js13(`(document.querySelector('#event-list [data-act="pin"]')||{}).textContent || ''`);
+      await js13(`document.querySelector('#event-list [data-act="pin"][data-id="ev-a"]')?.click()`);
+      await sleep(600);
+      const evA = settings.events().find((x) => x.id === 'ev-a');
+      const evB = settings.events().find((x) => x.id === 'ev-b');
+      ok(`T13 配置页置顶按钮生效并互斥 (btn=${pinBtnText}, A=${evA && evA.pinned}, B=${evB && evB.pinned})`, !!evA && evA.pinned === true && !!evB && evB.pinned !== true);
+      config.close();
+      await sleep(300);
+      settings.update({ ui: { showPast: false } });
 
       const failed = results.some(([c]) => !c);
       console.log(failed ? 'TEST_FAIL' : 'TEST_OK');

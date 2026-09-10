@@ -8,8 +8,9 @@
 <link rel="stylesheet" href="island.css">
 </head>
 <body data-state="strip" data-glass="fake" data-ink="light">
-  <div id="glass" class="glass"></div>
   <div id="pill">
+    <div id="glass" class="glass"></div>
+    <div id="glass-tint" class="glass-tint"></div>
     <div id="noise"></div>
     <div id="content"></div>
     <div id="buttons">
@@ -24,6 +25,7 @@
     <button class="n-btn" data-act="dnd">🔕 免打扰至下课</button>
     <span class="n-hint">滑动收起</span>
   </div>
+<script src="liquid-glass.js"></script>
 <script src="island.js"></script>
 </body>
 </html>

@@ -16,6 +16,8 @@ const NEUTRAL_LAST = { ok: true, vis: true, rect: null, pid: 4, cx: -9999, cy: -
 const REGION_FILE = () => path.join(os.tmpdir(), 'sci-region-cmd.txt');
 /** 截屏排除命令文件（探针子进程轮询此文件执行 SetWindowDisplayAffinity） */
 const EXCLUDE_FILE = () => path.join(os.tmpdir(), 'sci-exclude-cmd.txt');
+/** 截屏排除回读结果文件（探针写回 GetWindowDisplayAffinity 的值：17=已排除） */
+const EXCLUDE_RESULT_FILE = () => path.join(os.tmpdir(), 'sci-exclude-result.txt');
 /** 鼠标穿透命令文件（内容 "hwnd 0|1"，探针执行 WS_EX_TRANSPARENT 切换） */
 const PASSTHROUGH_FILE = () => path.join(os.tmpdir(), 'sci-transparent-cmd.txt');
 
@@ -154,6 +156,32 @@ class Probe {
   /** 截屏排除命令是否已被探针消费（测试用） */
   excludeFileConsumed() {
     return !fs.existsSync(EXCLUDE_FILE());
+  }
+
+  /** 读回截屏排除结果：内容 "set=True aff=17" 表示设置成功且回读为已排除 */
+  readExcludeResult() {
+    try {
+      const f = EXCLUDE_RESULT_FILE();
+      if (!fs.existsSync(f)) return null;
+      const raw = fs.readFileSync(f, 'utf8').trim();
+      fs.unlinkSync(f);
+      const aff = parseInt((raw.match(/aff=(\d+)/) || [])[1], 10);
+      return Number.isFinite(aff) ? aff : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 读回原始排除结果文本（诊断用） */
+  readExcludeResultRaw() {
+    try {
+      const f = EXCLUDE_RESULT_FILE();
+      if (!fs.existsSync(f)) return null;
+      const raw = fs.readFileSync(f, 'utf8').trim();
+      return raw;
+    } catch (e) {
+      return null;
+    }
   }
 
   /** 设置鼠标穿透（WS_EX_TRANSPARENT）：true = 点击穿透（全屏遮挡时用），false = 恢复正常交互 */

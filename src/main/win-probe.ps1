@@ -22,6 +22,7 @@ public static class Probe {
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
   [DllImport("user32.dll")] public static extern bool SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
   [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+  [DllImport("user32.dll")] public static extern bool GetWindowDisplayAffinity(IntPtr hWnd, out uint dwAffinity);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
@@ -41,6 +42,7 @@ Add-Type -AssemblyName UIAutomationTypes -ErrorAction SilentlyContinue
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $regionFile = Join-Path $env:TEMP 'sci-region-cmd.txt'
 $excludeFile = Join-Path $env:TEMP 'sci-exclude-cmd.txt'
+$excludeResultFile = Join-Path $env:TEMP 'sci-exclude-result.txt'
 $ptFile = Join-Path $env:TEMP 'sci-transparent-cmd.txt'
 $script:toastCounter = 0
 $script:toasts = @()
@@ -200,7 +202,10 @@ while ($true) {
       $content = (Get-Content -LiteralPath $excludeFile -Raw).Trim()
       if ($content.Length -gt 0) {
         $hwnd = [intptr][int64]$content
-        [Probe]::SetWindowDisplayAffinity($hwnd, 0x11) | Out-Null
+        $setOk = [Probe]::SetWindowDisplayAffinity($hwnd, 0x11)
+        $aff = [uint32]0
+        [void][Probe]::GetWindowDisplayAffinity($hwnd, [ref]$aff)
+        Set-Content -LiteralPath $excludeResultFile -Value ("set=" + $setOk + " aff=" + $aff) -Encoding ASCII
       }
       Remove-Item -LiteralPath $excludeFile -Force -ErrorAction SilentlyContinue
     } catch {

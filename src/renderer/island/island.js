@@ -8,7 +8,7 @@ const $ = (s) => document.querySelector(s);
 let state = 'strip';
 let events = [];
 let notify = null; // { title, body }
-let ui = { showSeconds: true, showPast: false, cycleEnabled: false, cycleSec: 6, classical: false, stripStyle: 'black' };
+let ui = { showSeconds: true, showPast: false, cycleEnabled: false, cycleSec: 6, classical: false, stripStyle: 'black', notifyShake: true };
 
 const ESC = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -74,31 +74,131 @@ window.island.onGlass((g) => {
   const el = $('#glass');
   el.style.display = 'block';
   el.style.backgroundImage = `url(${g.dataUrl})`;
-  el.style.backgroundSize = `${g.screenW}px ${g.screenH}px`;
-  const G = 60;
-  el.style.backgroundPosition = `${-(g.posX - G)}px ${-(g.posY - G)}px`;
+  // 玻璃图 = 窗口覆盖区域裁剪（含外扩采样余量）。按主进程给出的屏幕 DIP 尺寸
+  // 铺放，并用实际偏移定位——窗口贴屏幕边缘时外扩区被裁掉，偏移不为 0，
+  // 否则整幅背景会错位（表现为"看到的不是屏幕下方原画"）。
+  el.style.backgroundSize = `${g.dispW || 0}px ${g.dispH || 0}px`;
+  el.style.backgroundPosition = `${g.offX || 0}px ${g.offY || 0}px`;
+  // 新截屏到达：解除"动画后等待新图"状态（该帧画面与当前窗口位置匹配），
+  // 并重新评估显示——关键：这里必须走 updateGlassVisibility 才会挂上液态滤镜
+  //（否则玻璃一直以 CSS 兜底 blur 显示，折射/渗色/高光全部不生效）
+  if (glassWaiting) {
+    glassWaiting = false;
+    clearTimeout(glassWaitingTimer);
+    updateGlassVisibility();
+  }
 });
+
+// 动画/尺寸变化后、新截屏到达前的等待标记：期间不显示旧位置玻璃图（避免错位"方形模糊"帧）
+let glassWaiting = false;
+let glassWaitingTimer = null;
+
+function setGlassWaiting(waiting) {
+  glassWaiting = waiting;
+  clearTimeout(glassWaitingTimer);
+  if (waiting) {
+    // 兜底：若长时间收不到新截屏（截屏源不可用等），超时后恢复显示旧图，避免玻璃永久缺失
+    glassWaitingTimer = setTimeout(() => {
+      glassWaiting = false;
+      updateGlassVisibility();
+    }, 800);
+  }
+}
 
 window.island.onGlassMode((m) => {
   document.body.dataset.glass = m.mode || 'fake';
   updateGlassVisibility();
 });
 
-function updateGlassVisibility() {
-  // 真实毛玻璃仅在「放大版灵动岛」和「最大窗口」显示；细条（默认形态）不显示模糊层
-  const showGlass = document.body.dataset.glass === 'capture' && (state === 'expanded' || state === 'zoom');
-  $('#glass').style.display = showGlass ? 'block' : 'none';
+// 窗口尺寸动画信号：动画期间隐藏真实玻璃层（液态滤镜/合成层会逃逸 CSS 圆角
+// 裁剪，在放大/缩小时露出方形模糊边）。动画结束不立即恢复显示——旧截图与
+// 新窗口位置错位会闪出"方形模糊"帧；改为等待主进程推送新截屏（onGlass）后显示。
+window.island.onAnim((d) => {
+  document.body.dataset.anim = d && d.on ? '1' : '0';
+  if (!(d && d.on)) {
+    // 动画结束：窗口尺寸已稳定；若当前应显示玻璃，进入"等新图"状态（新截图由
+    // 主进程在动画结束后立即抓取推送），同时重建滤镜资源
+    const showGlass = glassShown();
+    if (showGlass) setGlassWaiting(true);
+    updateGlassVisibility();
+    scheduleLiquidGlass();
+  }
+});
+
+/** 当前状态是否应显示玻璃（真实模糊 capture 或 液态 liquid，且非小条/通知形态） */
+function glassShown() {
+  const m = document.body.dataset.glass;
+  return (m === 'capture' || m === 'liquid') && (state === 'expanded' || state === 'zoom');
 }
 
+function updateGlassVisibility() {
+  // 玻璃仅在「放大版灵动岛」和「最大窗口」显示；细条（默认形态）不显示
+  const showGlass = glassShown();
+  // 等新图期间保持隐藏（避免旧图与窗口错位的方形模糊帧）
+  const display = showGlass && !glassWaiting ? 'block' : 'none';
+  $('#glass').style.display = display;
+  // 高光层与玻璃同步显示（strip/notify 等黑底形态不叠加高光）
+  const tint = $('#glass-tint');
+  if (tint) tint.style.display = display;
+  if (showGlass && display === 'block') scheduleLiquidGlass();
+}
+
+/* ---------- 液态玻璃滤镜（liquid 模式专属：折射位移 + 渗色 + 镜面高光） ---------- */
+
+let glassFilterTimer = null;
+
+/** 依据当前窗口/pill 几何重建滤镜资源。
+    liquid 模式 → 挂载液态 SVG 滤镜；capture 模式 → 清掉内联滤镜，回退 CSS blur。 */
+function rebuildLiquidGlass() {
+  const g = document.getElementById('glass');
+  if (!g || !window.LiquidGlass) return;
+  if (document.body.dataset.glass !== 'liquid') {
+    g.style.filter = '';
+    return;
+  }
+  const p = document.getElementById('pill');
+  if (!p) return;
+  const gr = g.getBoundingClientRect();
+  const pr = p.getBoundingClientRect();
+  if (gr.width < 4 || gr.height < 4) return;
+  const cs = getComputedStyle(p);
+  const radius = Math.min(parseFloat(cs.borderRadius) || 0, Math.min(pr.width, pr.height) / 2);
+  const rect = {
+    x: pr.left - gr.left,
+    y: pr.top - gr.top,
+    w: pr.width,
+    h: pr.height,
+    r: Math.max(1, radius),
+  };
+  const ok = window.LiquidGlass.apply(window.LiquidGlass.FILTER_ID, rect);
+  // 失败（环境不支持等）：清掉内联滤镜，回退 CSS 兜底
+  if (!ok) g.style.filter = '';
+}
+
+/** 状态/尺寸变化后延迟重建（窗口缩放动画中多次触发，合并为一次） */
+function scheduleLiquidGlass() {
+  clearTimeout(glassFilterTimer);
+  glassFilterTimer = setTimeout(rebuildLiquidGlass, 80);
+}
+
+window.addEventListener('resize', scheduleLiquidGlass);
+
 let bgDark = false; // 白边状态（滞回记忆，防闪烁）
+let inkDark = false; // 深色文字状态（滞回记忆：亮暗背景在阈值附近波动时不反复闪字）
 
 window.island.onBrightness((data) => {
-  // 背景亮度：亮背景 → 深色文字；暗背景 → 白色文字（自动适配）
-  document.body.dataset.ink = data.brightness > 0.55 ? 'dark' : 'light';
+  const b = data.brightness;
+  // 文字颜色滞回：亮背景（>0.62）→ 深色文字；暗背景（<0.48）→ 白色文字；中间区间保持原样
+  if (inkDark) {
+    if (b < 0.48) inkDark = false;
+  } else if (b > 0.62) {
+    inkDark = true;
+  }
+  document.body.dataset.ink = inkDark ? 'dark' : 'light';
   // 无效果模式：仅在背景「几乎全黑」（亮度 < 0.15）时加细白边；
   // 滞回：退出阈值 0.25，防止亮度在阈值附近时白边闪烁
-  if (data.brightness < 0.15) bgDark = true;
-  else if (data.brightness > 0.25) bgDark = false;
+  if (b < 0.15) bgDark = true;
+  else if (b > 0.25) bgDark = false;
   document.body.dataset.bg = bgDark ? 'dark' : 'light';
 });
 
@@ -133,6 +233,9 @@ function primaryIndex(list) {
   if (ui.cycleEnabled && state === 'zoom' && list.length > 1) {
     return Math.floor(Date.now() / (ui.cycleSec * 1000)) % list.length;
   }
+  // 置顶事件（在配置页设置）：固定显示在灵动岛/横幅上（仍受启用与过期过滤约束，见 sortedEvents）
+  const pin = list.findIndex((e) => e.pinned);
+  if (pin !== -1) return pin;
   const idx = list.findIndex((e) => remaining(e) > 0);
   return idx === -1 ? 0 : idx;
 }
@@ -162,6 +265,8 @@ function currentInfo() {
   };
 }
 
+let shownPrimaryId = null; // 当前 DOM 展示的事件 id（轮播切换检测用）
+
 function render() {
   const box = $('#content');
 
@@ -171,7 +276,7 @@ function render() {
     box.innerHTML = `
       <div class="n-wrap">
         <div class="n-title">${ESC(notify ? notify.title : '系统通知')}</div>
-        ${bodyHtml ? `<div class="n-body">${bodyHtml}</div>` : ''}
+        ${bodyHtml ? `<div class="n-body ${ui.notifyShake !== false ? 'n-shake' : ''}">${bodyHtml}</div>` : ''}
       </div>`;
     // 弹窗下方按钮：自定义按钮（如「取消关机」）或默认「免打扰至下课」
     const bar = $('#dnd-bar');
@@ -183,6 +288,7 @@ function render() {
   }
 
   const info = currentInfo();
+  shownPrimaryId = info ? info.primary.id : null;
 
   if (state === 'strip') {
     // 细条：没有计时时间（无有效事件）时只显示纯黑胶囊，不渲染任何内容
@@ -345,12 +451,18 @@ function measureNotify() {
   window.island.notifySize({ w: Math.round(w), h: Math.round(h) });
 }
 
-/** 每秒更新数字/时间文本（不重建 DOM，减少开销） */
+/** 每秒更新数字/时间文本（不重建 DOM，减少开销）；
+    轮播/事件过期导致主事件切换时重建一次（标题/图标随事件变化） */
 function tickUpdate() {
+  if (state === 'notify') return; // 通知展示期间不轮播、不重建
   const info = currentInfo();
   if (!info) {
     // 事件过期/被移除后没有计时时间：重建一次，细条清空为纯黑、其余状态显示空提示
     if ($('#content').innerHTML !== '') render();
+    return;
+  }
+  if (info.primary.id !== shownPrimaryId) {
+    render(); // 轮播切到下一个事件 / 主事件变化：重建 DOM 更新标题
     return;
   }
   const daysEl = $('[data-role="days"]');
