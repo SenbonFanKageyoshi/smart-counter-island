@@ -1,12 +1,15 @@
 'use strict';
 /* 通过 GitHub REST API 推送本地提交（github.com 直连不通时的替代方案）
-   用法: node scripts/git-push-api.js <token> <commit> <parent> <branch> */
+   用法: node scripts/git-push-api.js <token> <commit> <parent> <branch> [remoteParent]
+   - <parent>：本地父提交（用于算 diff；内容应与远端 main 一致）
+   - [remoteParent]：远端 main 的 commit SHA。上一次推送是 API 造的提交，
+     本地 SHA 与远端不同，所以要显式指定远端父提交（省略则用本地父提交） */
 const { execSync } = require('child_process');
 const https = require('https');
 
-const [, , token, commit, parent, branch = 'main'] = process.argv;
+const [, , token, commit, parent, branch = 'main', remoteParent] = process.argv;
 if (!token || !commit || !parent) {
-  console.error('用法: node scripts/git-push-api.js <token> <commit> <parent> <branch>');
+  console.error('用法: node scripts/git-push-api.js <token> <commit> <parent> <branch> [remoteParent]');
   process.exit(1);
 }
 const REPO = 'SenbonFanKageyoshi/smart-counter-island';
@@ -39,7 +42,9 @@ function api(method, path, body) {
 async function main() {
   const parentFull = execSync(`git rev-parse ${parent}`, { encoding: 'utf8' }).trim();
   const commitFull = execSync(`git rev-parse ${commit}`, { encoding: 'utf8' }).trim();
-  console.log(`parent=${parentFull} commit=${commitFull}`);
+  // 远端父提交（API 造的提交 SHA 与本地不同）
+  const remoteParentFull = remoteParent || parentFull;
+  console.log(`parent=${parentFull} commit=${commitFull} remoteParent=${remoteParentFull}`);
 
   // 1) 变更文件列表（相对父提交）
   const diffOut = execSync(`git diff --name-status ${parentFull} ${commitFull}`, { encoding: 'utf8' });
@@ -61,8 +66,9 @@ async function main() {
     console.log(`  blob ok: ${f.path}`);
   }
 
-  // 3) 父提交的 tree
-  const parentCommit = await api('GET', `/git/commits/${parentFull}`);
+  // 3) 远端父提交的 tree
+  const parentCommit = await api('GET', `/git/commits/${remoteParentFull}`);
+  if (!parentCommit || !parentCommit.tree) throw new Error('读取远端父提交失败: ' + JSON.stringify(parentCommit));
   const baseTree = parentCommit.tree.sha;
 
   // 4) 创建 tree
@@ -71,7 +77,7 @@ async function main() {
 
   // 5) 创建 commit
   const msg = execSync(`git log -1 --format=%s ${commitFull}`, { encoding: 'utf8' }).trim();
-  const newCommit = await api('POST', '/git/commits', { message: msg, tree: tree.sha, parents: [parentFull] });
+  const newCommit = await api('POST', '/git/commits', { message: msg, tree: tree.sha, parents: [remoteParentFull] });
   if (!newCommit.sha) throw new Error('commit 失败: ' + JSON.stringify(newCommit));
 
   // 6) 更新分支引用
