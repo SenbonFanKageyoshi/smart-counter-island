@@ -2,9 +2,25 @@
 const { BrowserWindow, screen, desktopCapturer, Menu, app } = require('electron');
 const path = require('path');
 const settings = require('./settings');
+const perf = require('./perf');
 
 /** 窗口比灵动岛本体多出的透明边距（DIP） */
 const PAD = 8;
+
+/** 只要背景亮度（不需要玻璃背景图）时请求的缩略图宽度（像素）。
+    整屏 1:1 缩略图是 1920×1080×4 ≈ 8MB，小图只要几十 KB —— 截屏拷贝开销降一个数量级。 */
+const FAST_THUMB_W = 480;
+
+/** 位图指纹（FNV-1a，采样遍历，避免整块哈希的开销）：用于判断玻璃背景是否变化 */
+function bitmapHash(buf) {
+  let h = 0x811c9dc5;
+  const step = buf.length > 262144 ? 16 : 4;
+  for (let i = 0; i < buf.length; i += step) {
+    h ^= buf[i];
+    h = (h * 0x01000193) >>> 0;
+  }
+  return (h ^ buf.length) >>> 0;
+}
 
 /** 各状态下的灵动岛本体尺寸（不含边距，DIP） */
 const PILL = {
@@ -28,6 +44,52 @@ const STATE_NAMES = {
 function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
+
+/* ---------- 性能计数器（--perf 模式；未启用时只是几个数字自增，开销可忽略） ---------- */
+
+const perfAnim = {
+  s: { animations: 0, frames: 0, dupFrames: 0, intervalSum: 0, intervalCount: 0, intervalMax: 0, durationSum: 0, durationMax: 0, regionCalls: 0, regionSkipped: 0, applySum: 0, applyMax: 0 },
+  reset() {
+    for (const k of Object.keys(this.s)) this.s[k] = 0;
+  },
+  report() {
+    const s = this.s;
+    return {
+      ...s,
+      avgFrameMs: s.intervalCount ? +(s.intervalSum / s.intervalCount).toFixed(2) : 0,
+      avgDurationMs: s.animations ? +(s.durationSum / s.animations).toFixed(1) : 0,
+      avgApplyMs: s.frames ? +(s.applySum / s.frames).toFixed(2) : 0,
+    };
+  },
+};
+
+const perfCapture = {
+  s: { calls: 0, guardSkips: 0, fastFrames: 0, glassFrames: 0, encoded: 0, unchanged: 0, totalMs: 0, maxMs: 0, sourcesMs: 0, bitmapMs: 0, encodeMs: 0, ipcBytes: 0 },
+  reset() {
+    for (const k of Object.keys(this.s)) this.s[k] = 0;
+  },
+  report() {
+    const s = this.s;
+    return {
+      ...s,
+      avgMs: s.calls ? +(s.totalMs / s.calls).toFixed(1) : 0,
+      avgSourcesMs: s.calls ? +(s.sourcesMs / s.calls).toFixed(1) : 0,
+      avgBitmapMs: s.encoded ? +(s.bitmapMs / s.encoded).toFixed(1) : 0,
+      avgEncodeMs: s.encoded ? +(s.encodeMs / s.encoded).toFixed(1) : 0,
+      avgIpcKB: s.encoded ? +(s.ipcBytes / s.encoded / 1024).toFixed(1) : 0,
+    };
+  },
+};
+
+const perfProbe = {
+  s: { requests: 0, lite: 0 },
+  reset() {
+    for (const k of Object.keys(this.s)) this.s[k] = 0;
+  },
+  report() {
+    return { ...this.s };
+  },
+};
 
 /**
  * 纯决策函数：由输入推导目标状态（可单测）。
@@ -55,6 +117,13 @@ function decideState(input) {
   // 手动隐藏：始终灵动岛，悬浮不唤起（避免"鼠标移上去就展开横幅"）
   if (mode === 'hidden') {
     return 'strip';
+  }
+
+  // 手动「大窗口驻留」：倒计时窗口常显，不因闲置/操作/悬停收回
+  // （全屏遮挡已在上面拦截 → 仍然收成灵动岛并隐藏，不遮挡授课；无事件时同样收成灵动岛）
+  if (mode === 'zoom') {
+    // 「允许倒计时窗口」关闭时退化为横幅（保持可见，但不放大）
+    return zoomAllowed ? 'zoom' : 'expanded';
   }
 
   // 光标悬停在小岛上：保持现状（不来回切换，按钮可点击）；
@@ -96,6 +165,7 @@ class Island {
     this.zoomWidth = 0;       // 倒计时窗口宽度（渲染器按文字内容测量上报；0 = 用默认宽度）
     this.fullscreen = false;  // 最近一次探针检测是否处于全屏遮挡（全屏锁定灵动岛）
     this.lastLi = 0;          // 最近一次探针报告的最后输入时刻（用于检测"有操作"）
+    this.lastInputAt = 0;     // 本机感知到的输入时刻（探针采样节奏分档用）
     this.zoomCooldownUntil = 0; // 操作后 60 秒内不自动弹大屏
     this.dragging = false;
     this.animating = false;   // 动画进行中（暂停自动切换与截屏，防卡顿/打断）
@@ -116,6 +186,16 @@ class Island {
     this.capturing = false;   // 截屏防重入（防止并发截屏导致卡顿）
     this.lastBrightness = 0.5; // 最近一次背景亮度（0-1，文字颜色适配用）
     this.regionApplied = false; // 圆角区域是否已成功应用（探针就绪后重试）
+    this.lastRegionKey = null;   // 最近一次已生效的圆角区域参数（相同则跳过重复设置）
+    this.probeEveryMs = 350;     // 当前探针采样间隔（按活跃度自适应，见 tick）
+    this.lastProbeAt = 0;
+    this.lastBrightnessSent = -1; // 最近一次已下发的亮度（变化很小则不下发，省 IPC 与重绘）
+    this.lastGlassHash = 0;       // 最近一次玻璃背景图指纹（未变化则不重复编码/下发）
+    this.glActive = false;        // GPU 液态玻璃：渲染层视频流是否已就绪
+    this.glFallback = false;      // GPU 取流/着色器失败后本次运行回退到 CPU 液态玻璃
+    this.glStats = null;          // 渲染层回传的 GPU 玻璃统计（--perf / --diag 用）
+    this.glError = '';            // 最近一次 GPU 取流失败原因
+    this.lastGeomKey = '';        // 最近一次下发的窗口几何（移动时增量推送）
     this.excludeApplied = false; // 截屏排除自身是否已设置（探针就绪后重试）
     this.autoHidden = false;     // 智能隐藏：全屏时窗口是否已自动隐藏
     this.displaysBound = false;
@@ -147,7 +227,25 @@ class Island {
   }
 
   getStatePayload() {
-    return { state: this.state, opacity: this.currentOpacity };
+    // 附带几何信息：GPU 液态玻璃（webgl 模式）需要把画布像素映射到屏幕/视频帧坐标
+    const geom = this.geomPayload();
+    return { state: this.state, opacity: this.currentOpacity, geom };
+  }
+
+  /** 渲染层做「画布 → 屏幕物理像素 → 视频帧」映射所需的几何（DIP + 缩放） */
+  geomPayload() {
+    if (!this.win || this.win.isDestroyed()) return null;
+    try {
+      const b = this.win.getBounds();
+      const disp = this.islandDisplay();
+      return {
+        win: { x: b.x, y: b.y, width: b.width, height: b.height },
+        disp: { x: disp.bounds.x, y: disp.bounds.y, w: disp.bounds.width, h: disp.bounds.height },
+        scale: disp.scaleFactor || 1,
+      };
+    } catch (e) {
+      return null;
+    }
   }
 
   /** 小岛当前所在显示器（按窗口实际位置） */
@@ -208,9 +306,31 @@ class Island {
     const nw = Math.max(240, Math.min(maxW, Math.round(w)));
     if (this.zoomWidth === nw) return;
     this.zoomWidth = nw;
+    this.zoomWidthChanges = (this.zoomWidthChanges || 0) + 1;
     if (this.state === 'zoom' && this.win && !this.win.isDestroyed()) {
-      this.animateBounds(this.computeBounds('zoom', this.islandDisplay()));
+      const target = this.computeBounds('zoom', disp);
+      // 内容宽度的微小变化直接改尺寸：走 150ms 动画的话玻璃会被隐藏一小会儿，
+      // 每到整秒数字变化就闪一下，看起来就是"不跟手"
+      const cur = this.win.getBounds();
+      if (Math.abs(cur.width - target.width) <= 24 && Math.abs(cur.height - target.height) <= 24) {
+        this.applyBoundsNow(target);
+      } else {
+        this.animateBounds(target);
+      }
     }
+  }
+
+  /** 直接应用窗口边界（不做动画 → 玻璃不隐藏）：用于内容宽度的微小变化 */
+  applyBoundsNow(target) {
+    if (!this.win || this.win.isDestroyed()) return;
+    try {
+      this.win.setBounds(target);
+    } catch (e) {
+      return;
+    }
+    this.applyRegion();
+    this.pushGeomIfChanged(true);
+    this.send('island:anim', { on: false });
   }
 
   /** 按状态计算窗口边界（每种状态独立位置配置；通知形态尺寸随内容自适应） */
@@ -280,8 +400,11 @@ class Island {
     const y = Math.round((PAD - gap) * scale);
     const w = Math.round((s.w + gap * 2) * scale);
     const h = Math.round((s.h + gap * 2) * scale);
+    // 尺寸/状态没变且上次已生效：跳过（避免每次动画结束都写一次命令文件 + SetWindowRgn）
     if (hwnd && this.probe && this.probe.setRegion(hwnd, x, y, w, h, Math.round(radius * scale))) {
       this.regionApplied = true;
+      this.lastRegionKey = `${hwnd}|${x}|${y}|${w}|${h}|${Math.round(radius * scale)}`;
+      perfAnim.s.regionCalls += 1;
       return;
     }
     // 探针未就绪或写入失败：标记未应用，tick 会持续重试；同时回退 Electron setShape
@@ -291,6 +414,29 @@ class Island {
     } catch (e) {
       /* ignore */
     }
+  }
+
+  /** 动画结束时调用：区域参数与上次完全一致就跳过。
+      连续切换状态（拖拽放大/缩小时每次动画结束都会来一次）时省掉一次
+      命令文件写入 + 探针侧 SetWindowRgn，动画收尾更轻。 */
+  applyRegionIfChanged() {
+    if (process.platform !== 'win32' || !this.win || this.win.isDestroyed()) return;
+    const s =
+      this.state === 'zoom'
+        ? this.zoomSize(this.islandDisplay())
+        : this.state === 'notify' && this.notifySize
+          ? this.notifySize
+          : PILL[this.state] || PILL.strip;
+    const radius = (REGION_RADIUS[this.state] || 24) * 2;
+    const scale = this.islandDisplay().scaleFactor;
+    const hwnd = this.getHwnd();
+    const gap = 3;
+    const key = `${hwnd}|${Math.round((PAD - gap) * scale)}|${Math.round((PAD - gap) * scale)}|${Math.round((s.w + gap * 2) * scale)}|${Math.round((s.h + gap * 2) * scale)}|${Math.round(radius * scale)}`;
+    if (this.regionApplied && key === this.lastRegionKey) {
+      perfAnim.s.regionSkipped += 1;
+      return;
+    }
+    this.applyRegion();
   }
 
   /** 窗口尺寸变化后立即刷新玻璃背景图：动画期间 captureOnce 被 animating 跳过，
@@ -322,6 +468,7 @@ class Island {
       }
       this.animating = false;
       this.applyRegion();
+      this.pushGeomIfChanged(true);
       this.refreshGlassAfterResize();
       return;
     }
@@ -335,33 +482,71 @@ class Island {
     } catch (e) {
       /* ignore */
     }
-    // 帧率可调（高级设置 animFps）：每帧间隔 = 1000/fps，总时长 150ms
+    // 帧率可调（高级设置 animFps）：目标帧间隔 = 1000/fps，总时长 150ms。
+    // 注意：不能按「帧数 × 间隔」推算进度 —— Windows 定时器实际精度约 15.6ms，
+    // 固定步进会让 150ms 的动画跑成 210ms+。这里用真实时间轴驱动：
+    // 进度 = (now - t0) / dur，定时器只负责「尽快再来一帧」，因此
+    // 无论机器快慢，动画时长都恰好是 dur，慢机器表现为帧数少而不是变慢。
     const fpsCfg = Math.max(20, Math.min(120, parseInt(st.smart.animFps, 10) || 60));
     const dur = 150;
     const interval = Math.max(8, Math.round(1000 / fpsCfg));
-    const steps = Math.max(4, Math.round(dur / interval));
-    let i = 0;
+    let lastKey = ''; // 上一帧实际应用的尺寸：重复帧不再调用 setBounds（省一次合成器 resize）
+    const t0 = process.uptime() * 1000;
+    let lastTs = t0;
+    let done = false;
+    perfAnim.s.animations += 1;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      this.animTimer = null;
+      const elapsed = process.uptime() * 1000 - t0;
+      perfAnim.s.durationSum += elapsed;
+      if (elapsed > perfAnim.s.durationMax) perfAnim.s.durationMax = elapsed;
+      this.animating = false;
+      this.applyRegionIfChanged(); // 尺寸稳定后再设置圆角区域（物理像素，外扩防锯齿）
+      this.pushGeomIfChanged(true); // 动画结束后补推最终几何（GPU 玻璃映射）
+      this.refreshGlassAfterResize();
+    };
     const step = () => {
-      i += 1;
-      const e = easeOutCubic(i / steps);
+      const frameStart = process.uptime() * 1000;
+      const prog = Math.min(1, (frameStart - t0) / dur);
+      const e = easeOutCubic(prog);
       const b = {
         x: Math.round(cur.x + (target.x - cur.x) * e),
         y: Math.round(cur.y + (target.y - cur.y) * e),
         width: Math.round(cur.width + (target.width - cur.width) * e),
         height: Math.round(cur.height + (target.height - cur.height) * e),
       };
-      try {
-        this.win.setBounds(b);
-      } catch (err) {
-        /* ignore */
-      }
-      if (i < steps) {
-        this.animTimer = setTimeout(step, interval);
+      const key = `${b.x},${b.y},${b.width},${b.height}`;
+      // 末帧必须应用（即使与上一帧取整后相同），否则窗口会停在离目标 1px 的位置
+      if (prog >= 1 || key !== lastKey) {
+        lastKey = key;
+        const applyStart = process.uptime() * 1000;
+        try {
+          this.win.setBounds(b);
+        } catch (err) {
+          /* ignore */
+        }
+        const applyMs = process.uptime() * 1000 - applyStart;
+        perfAnim.s.applySum += applyMs;
+        if (applyMs > perfAnim.s.applyMax) perfAnim.s.applyMax = applyMs;
+        perfAnim.s.frames += 1;
       } else {
-        this.animTimer = null;
-        this.animating = false;
-        this.applyRegion(); // 尺寸稳定后再设置圆角区域（物理像素，外扩防锯齿）
-        this.refreshGlassAfterResize();
+        perfAnim.s.dupFrames += 1;
+      }
+      const now = process.uptime() * 1000;
+      const dt = now - lastTs;
+      lastTs = now;
+      if (dt > 0) {
+        perfAnim.s.intervalSum += dt;
+        perfAnim.s.intervalCount += 1;
+        if (dt > perfAnim.s.intervalMax) perfAnim.s.intervalMax = dt;
+      }
+      if (prog < 1) {
+        // 扣除本帧耗时再定时，尽量贴目标帧间隔（定时器精度不足时退化为稍长间隔）
+        this.animTimer = setTimeout(step, Math.max(0, interval - (now - frameStart)));
+      } else {
+        finish();
       }
     };
     step();
@@ -415,6 +600,38 @@ class Island {
     this.send('island:state', this.getStatePayload());
   }
 
+  /**
+   * 按「活跃度」决定探针采样节奏 —— 探针是 PowerShell 子进程，每次采样都要
+   * 枚举窗口/读光标，是静止时最大的 CPU 开销来源。分档：
+   *   350ms  活跃：正在显示通知 / 拖拽中 / 光标在小岛上 / 3 秒内有过输入
+   *   700ms  常规：默认（通知延迟 ≤0.7 秒，肉眼无感）
+   *   1050ms 节能：全屏隐藏期间（用轻量探测，跳过通知枚举）或已关闭通知接管
+   * 采样变慢只影响「发现输入/全屏/通知」的时延，不影响动画与渲染。
+   */
+  requestProbe() {
+    if (!this.probe) return;
+    const now = Date.now();
+    const smart = settings.load().smart;
+    const active = this.state === 'notify' || this.dragging || this.lastOverPill || now - this.lastInputAt < 3000;
+    let every;
+    let lite = false;
+    if (this.autoHidden) {
+      every = 1050;
+      lite = true; // 隐藏期间不需要通知枚举
+    } else if (active) {
+      every = 350;
+    } else if (smart.notifyEnabled === false) {
+      every = 1050;
+    } else {
+      every = 700;
+    }
+    if (now - this.lastProbeAt < every) return;
+    this.lastProbeAt = now;
+    perfProbe.s.requests += 1;
+    if (lite) perfProbe.s.lite += 1;
+    this.probe.request(lite);
+  }
+
   broadcastEvents() {
     const st = settings.load();
     this.send('island:events', {
@@ -422,18 +639,29 @@ class Island {
       ui: {
         showSeconds: st.ui.showSeconds,
         showPast: st.ui.showPast,
+        dayRounding: st.ui.dayRounding || 'floor',
         cycleEnabled: st.smart.cycleEnabled,
         cycleSec: st.smart.cycleSec,
         classical: !!st.ui.classical,
         stripStyle: st.ui.stripStyle === 'glass' ? 'glass' : 'black',
         notifyShake: st.smart.notifyShake !== false,
-      },
+        // 玻璃高光强度（%）：CPU/GPU 两条链路与 CSS 表面光影统一按此系数缩放
+        glassGlow: typeof st.ui.glassGlow === 'number' ? st.ui.glassGlow : 100,
+        // GPU 液态玻璃刷新帧率（只对 webgl 模式生效）
+        gpuGlassFps: typeof st.ui.gpuGlassFps === 'number' ? st.ui.gpuGlassFps : 30,
+        // GPU 液态玻璃观感微调（%）：边缘高光 / 底部阴影 / 折射强度 / 折射范围（只影响 GPU 着色器）
+        glEdgeGlow: typeof st.ui.glEdgeGlow === 'number' ? st.ui.glEdgeGlow : 100,
+        glBottomShade: typeof st.ui.glBottomShade === 'number' ? st.ui.glBottomShade : 100,
+        glRefract: typeof st.ui.glRefract === 'number' ? st.ui.glRefract : 100,
+        glBand: typeof st.ui.glBand === 'number' ? st.ui.glBand : 100,
+     },
     });
   }
 
   tick() {
     if (!this.win || this.win.isDestroyed() || this.dragging || this.paused || this.animating) return;
-    if (this.probe) this.probe.request(); // 向系统探针请求一次采样
+    this.requestProbe();
+    this.pushGeomIfChanged(); // 窗口移动/缩放时给 GPU 玻璃增量推送几何
     const st = settings.load();
     const s = st.smart;
     const mode = st.manual.mode;
@@ -490,6 +718,11 @@ class Island {
           } else {
             this.win.showInactive();
           }
+          // 隐藏期间让渲染进程进入后台节流（定时器/重绘降频），省 CPU 与内存带宽；
+          // 恢复显示时立刻关掉节流，保证动画与时钟更新即时
+          if (this.win.webContents && !this.win.webContents.isDestroyed()) {
+            this.win.webContents.setBackgroundThrottling(wantAutoHide);
+          }
         } catch (e) {
           /* ignore */
         }
@@ -537,6 +770,7 @@ class Island {
     if (p && p.li && p.li !== this.lastLi) {
       this.lastLi = p.li;
       this.zoomCooldownUntil = Date.now() + 60 * 1000;
+      this.lastInputAt = Date.now(); // 记录本机看到的输入时刻（探针采样节奏用）
     }
 
     // —— 系统通知接管：检测新通知 / 通知显示保持 / 免打扰过期 ——
@@ -754,8 +988,14 @@ class Island {
 
   setManual(mode) {
     settings.update({ manual: { mode } });
-    this.setState(mode === 'hidden' ? 'strip' : this.state === 'strip' ? 'expanded' : this.state);
+    // 大窗口驻留：立即切到倒计时窗口（全屏/无事件时状态机随后会拉回灵动岛）
+    if (mode === 'zoom') {
+      this.setState(this.zoomAllowed() && !this.fullscreen ? 'zoom' : 'expanded');
+    } else {
+      this.setState(mode === 'hidden' ? 'strip' : this.state === 'strip' ? 'expanded' : this.state);
+    }
     this.sendState();
+    this.broadcastEvents();
   }
 
   toggleVisible() {
@@ -852,6 +1092,7 @@ class Island {
       { label: '自动模式', type: 'radio', checked: mode === 'auto', click: () => this.setManual('auto') },
       { label: '固定显示', type: 'radio', checked: mode === 'pinned', click: () => this.setManual('pinned') },
       { label: '隐藏成灵动岛', type: 'radio', checked: mode === 'hidden', click: () => this.setManual('hidden') },
+      { label: '大窗口驻留（常显倒计时窗口）', type: 'radio', checked: mode === 'zoom', click: () => this.setManual('zoom') },
       { type: 'separator' },
       { label: '立即放大（倒计时窗口）', enabled: this.zoomAllowed(), click: () => this.manualState('zoom', 6000) },
       { label: '收起（灵动岛）', click: () => this.setState('strip') },
@@ -871,15 +1112,60 @@ class Island {
     if (m === 'off') return 'off';
     if (m === 'fake') return 'fake';
     if (m === 'liquid') return 'liquid';
+    // GPU 液态玻璃：渲染层取流失败/着色器编译失败 → 本次运行自动回退 CPU 液态玻璃
+    if (m === 'webgl') return this.glFallback ? 'liquid' : 'webgl';
     return 'capture'; // auto / capture（模糊玻璃）
   }
 
-  /** 亮度/截屏循环：始终运行（文字颜色自动适配 + 真实毛玻璃） */
+  /** GPU 液态玻璃是否正在生效（渲染层取流成功且未回退） */
+  glStreamActive() {
+    return this.glActive === true && this.effectiveGlassMode() === 'webgl';
+  }
+
+  /**
+   * 注册屏幕取流处理器：GPU 液态玻璃模式下，渲染层调用 getDisplayMedia() 时
+   * 由主进程指定「小岛所在的那块显示器」作为视频源。
+   */
+  registerDisplayMedia() {
+    if (!this.win || this.win.isDestroyed()) return;
+    try {
+      const ses = this.win.webContents.session;
+      ses.setDisplayMediaRequestHandler(
+        async (request, callback) => {
+          try {
+            const disp = this.islandDisplay();
+            const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
+            const src = sources.find((s) => String(s.display_id) === String(disp.id)) || sources[0];
+            if (!src) {
+              callback({});
+              return;
+            }
+            callback({ video: src });
+          } catch (e) {
+            console.error('[island] 取流源选择失败:', e.message);
+            callback({});
+          }
+        },
+        { useSystemPicker: false }
+      );
+    } catch (e) {
+      console.error('[island] setDisplayMediaRequestHandler 失败:', e.message);
+    }
+  }
+
+  /** 亮度/截屏循环：始终运行（文字颜色自动适配 + 真实毛玻璃）。
+      GPU 液态玻璃模式下渲染层自己从视频帧算亮度 → 主进程完全停止截屏（省掉整条管线）。 */
   startGlass() {
     if (this.glassTimer || !this.win) return;
+    if (this.effectiveGlassMode() === 'webgl') return; // 交给渲染层，主进程不截屏
     this.glassOn = true;
     const loop = async () => {
       if (!this.glassOn || !this.win || this.win.isDestroyed()) {
+        this.glassTimer = null;
+        return;
+      }
+      if (this.effectiveGlassMode() === 'webgl') {
+        // 切到 GPU 模式：停掉截屏循环（渲染层接管亮度）
         this.glassTimer = null;
         return;
       }
@@ -909,26 +1195,48 @@ class Island {
   }
 
   async captureOnce() {
-    if (this.capturing || this.dragging || this.animating) return;
-    if (this.autoHidden) return; // 智能隐藏期间（全屏）无需采样
+    if (this.capturing || this.dragging || this.animating) {
+      perfCapture.s.guardSkips += 1;
+      return;
+    }
+    if (this.autoHidden) {
+      perfCapture.s.guardSkips += 1;
+      return; // 智能隐藏期间（全屏）无需采样
+    }
+    // GPU 链路生效时截屏纯属浪费：玻璃与亮度都由渲染层从视频流里取，
+    // 这里每抓一次都要主进程走一遍 desktopCapturer，窗口变化时会明显卡顿（"不跟手"）
+    if (this.glStreamActive()) {
+      perfCapture.s.guardSkips += 1;
+      return;
+    }
     this.capturing = true;
+    const t0 = Date.now();
+    perfCapture.s.calls += 1;
     try {
       const st = settings.load();
       const mode = this.effectiveGlassMode();
       const disp = this.islandDisplay();
       const bw = disp.bounds.width;
       const bh = disp.bounds.height;
-      // 缩略图请求「屏幕物理像素尺寸」= 1:1，保证玻璃背景与真实画面同样清晰
+      // 是否需要玻璃背景图：横幅/倒计时窗口需要；细条（灵动岛）在
+      // 「细条样式=玻璃」时也需要（否则细条只剩描边、没有玻璃）。
+      // 其余情况（黑底细条、通知、模拟/关闭）只需要背景亮度 →
+      // 请求小尺寸缩略图（几十 KB 而非整屏 8MB），截屏/拷贝开销降低一个数量级。
+      const stripGlass = this.state === 'strip' && st.ui.stripStyle === 'glass';
+      const needGlass = (mode === 'capture' || mode === 'liquid') && (this.state === 'expanded' || this.state === 'zoom' || stripGlass);
+      // 玻璃图需要「屏幕物理像素尺寸」= 1:1，保证玻璃背景与真实画面同样清晰
       // （若只请求半分辨率，放大后中心区域会发虚，看着就不像"原画"）
       const physW = disp.size ? disp.size.width : Math.round(bw * (disp.scaleFactor || 1));
       const physH = disp.size ? disp.size.height : Math.round(bh * (disp.scaleFactor || 1));
+      const thumbW = needGlass ? Math.max(320, physW) : FAST_THUMB_W;
+      const thumbH = needGlass ? Math.max(180, physH) : Math.round((FAST_THUMB_W * bh) / Math.max(1, bw));
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
-        thumbnailSize: { width: Math.max(320, physW), height: Math.max(180, physH) },
+        thumbnailSize: { width: thumbW, height: thumbH },
       });
-      const src =
-        sources.find((s) => String(s.display_id) === String(disp.id)) ||
-        sources[0];
+      const tAfterSources = Date.now();
+      perfCapture.s.sourcesMs += tAfterSources - t0;
+      const src = sources.find((s) => String(s.display_id) === String(disp.id)) || sources[0];
       if (!src) return;
       const img = src.thumbnail;
       if (img.isEmpty()) return;
@@ -937,54 +1245,87 @@ class Island {
       const rx = size.width / bw;
       const ry = size.height / bh;
 
-      // 计算小岛背后区域的平均亮度
-      const brightness = this.computeBrightness(img, b, disp, rx, ry);
-      this.lastBrightness = brightness;
-      this.send('island:brightness', { brightness });
-
-      // 玻璃图：仅 expanded/zoom 状态且玻璃模式为 capture/liquid 时发送。
-      // 只裁剪窗口覆盖区域（外扩 MARGIN 采样余量），不发全屏图。
-      if ((mode === 'capture' || mode === 'liquid') && (this.state === 'expanded' || this.state === 'zoom')) {
-        const MARGIN = 60; // 外扩采样余量（DIP）：与 CSS --glass-gap 一致，#glass 相对窗口外扩这么多
-        // #glass 元素在屏幕上的左上角（窗口左上再向左上外扩 MARGIN）
-        const glassLeftDIP = b.x - MARGIN;
-        const glassTopDIP = b.y - MARGIN;
-        const sx0 = Math.floor((b.x - disp.bounds.x - MARGIN) * rx);
-        const sy0 = Math.floor((b.y - disp.bounds.y - MARGIN) * ry);
-        const sx1 = Math.ceil((b.x - disp.bounds.x + b.width + MARGIN) * rx);
-        const sy1 = Math.ceil((b.y - disp.bounds.y + b.height + MARGIN) * ry);
-        // 屏幕边缘处会被裁剪（窗口贴边时外扩区在屏幕外）→ 必须把实际裁剪起点
-        // 回传给渲染层，否则图片按「完整外扩区」铺会产生整体错位
-        const cx0 = Math.max(0, sx0);
-        const cy0 = Math.max(0, sy0);
-        const cx1 = Math.min(size.width, sx1);
-        const cy1 = Math.min(size.height, sy1);
-        if (cx1 > cx0 && cy1 > cy0) {
-          let cropped;
-          try {
-            cropped = img.crop({ x: cx0, y: cy0, width: cx1 - cx0, height: cy1 - cy0 });
-          } catch (e) {
-            cropped = null;
-          }
-          if (cropped && !cropped.isEmpty()) {
-            // dispW/dispH：裁剪图的屏幕 DIP 尺寸；
-            // offX/offY：裁剪图左上角相对 #glass 元素左上角的偏移（贴边被裁时 > 0）
-            const cropLeftDIP = cx0 / rx + disp.bounds.x;
-            const cropTopDIP = cy0 / ry + disp.bounds.y;
-            this.send('island:glass', {
-              dataUrl: cropped.toDataURL(),
-              dispW: Math.round((cx1 - cx0) / rx),
-              dispH: Math.round((cy1 - cy0) / ry),
-              offX: Math.round(cropLeftDIP - glassLeftDIP),
-              offY: Math.round(cropTopDIP - glassTopDIP),
-            });
-          }
-        }
+      if (!needGlass) {
+        // —— 快路径：只算亮度（小图） ——
+        perfCapture.s.fastFrames += 1;
+        const brightness = this.computeBrightness(img, b, disp, rx, ry);
+        this.lastBrightness = brightness;
+        this.sendBrightness(brightness);
+        this.glassFail = 0;
+        return;
       }
+
+      // —— 玻璃路径：裁剪窗口区域（外扩 MARGIN 采样余量） ——
+      const MARGIN = 60; // 外扩采样余量（DIP）：与 CSS --glass-gap 一致，#glass 相对窗口外扩这么多
+      // #glass 元素在屏幕上的左上角（窗口左上再向左上外扩 MARGIN）
+      const glassLeftDIP = b.x - MARGIN;
+      const glassTopDIP = b.y - MARGIN;
+      const sx0 = Math.floor((b.x - disp.bounds.x - MARGIN) * rx);
+      const sy0 = Math.floor((b.y - disp.bounds.y - MARGIN) * ry);
+      const sx1 = Math.ceil((b.x - disp.bounds.x + b.width + MARGIN) * rx);
+      const sy1 = Math.ceil((b.y - disp.bounds.y + b.height + MARGIN) * ry);
+      // 屏幕边缘处会被裁剪（窗口贴边时外扩区在屏幕外）→ 必须把实际裁剪起点
+      // 回传给渲染层，否则图片按「完整外扩区」铺会产生整体错位
+      const cx0 = Math.max(0, sx0);
+      const cy0 = Math.max(0, sy0);
+      const cx1 = Math.min(size.width, sx1);
+      const cy1 = Math.min(size.height, sy1);
+      if (cx1 <= cx0 || cy1 <= cy0) return;
+      let cropped;
+      try {
+        cropped = img.crop({ x: cx0, y: cy0, width: cx1 - cx0, height: cy1 - cy0 });
+      } catch (e) {
+        cropped = null;
+      }
+      if (!cropped || cropped.isEmpty()) return;
+      perfCapture.s.glassFrames += 1;
+      // 亮度从裁剪图算（几百 KB），不再对整屏图 toBitmap（8MB 拷贝）
+      const cropLeftDIP = cx0 / rx + disp.bounds.x;
+      const cropTopDIP = cy0 / ry + disp.bounds.y;
+      const cropDisp = { bounds: { x: cropLeftDIP, y: cropTopDIP } };
+      const crx = cropped.getSize().width / ((cx1 - cx0) / rx);
+      const cry = cropped.getSize().height / ((cy1 - cy0) / ry);
+      const brightness = this.computeBrightness(cropped, b, cropDisp, crx, cry);
+      this.lastBrightness = brightness;
+      this.sendBrightness(brightness);
+
+      // 背景没变就不重新编码/下发（PNG 编码 + 大字符串 IPC 是这条链路最贵的部分）。
+      // 指纹取自裁剪图位图的首/中/尾采样 + 长度，桌面静止时命中率很高。
+      const bmp = cropped.toBitmap();
+      perfCapture.s.bitmapMs += Date.now() - tAfterSources;
+      const hash = bitmapHash(bmp);
+      if (hash === this.lastGlassHash) {
+        perfCapture.s.unchanged += 1;
+        this.glassFail = 0;
+        return;
+      }
+      this.lastGlassHash = hash;
+      perfCapture.s.encoded += 1;
+      const encStart = Date.now();
+      const dataUrl = cropped.toDataURL();
+      perfCapture.s.encodeMs += Date.now() - encStart;
+      perfCapture.s.ipcBytes += dataUrl.length;
+      this.send('island:glass', {
+        dataUrl,
+        dispW: Math.round((cx1 - cx0) / rx),
+        dispH: Math.round((cy1 - cy0) / ry),
+        offX: Math.round(cropLeftDIP - glassLeftDIP),
+        offY: Math.round(cropTopDIP - glassTopDIP),
+      });
       this.glassFail = 0;
     } finally {
+      perfCapture.s.totalMs += Date.now() - t0;
+      const took = Date.now() - t0;
+      if (took > perfCapture.s.maxMs) perfCapture.s.maxMs = took;
       this.capturing = false;
     }
+  }
+
+  /** 下发背景亮度：变化很小时跳过（文字颜色有滞回门限，微小抖动无意义，省 IPC 与重绘） */
+  sendBrightness(brightness) {
+    if (this.lastBrightnessSent >= 0 && Math.abs(brightness - this.lastBrightnessSent) < 0.012) return;
+    this.lastBrightnessSent = brightness;
+    this.send('island:brightness', { brightness });
   }
 
   /** 从缩略图计算小岛背后区域的平均亮度（0-1） */
@@ -999,7 +1340,9 @@ class Island {
       if (w <= 0 || h <= 0) return 0.5;
       let sum = 0;
       let n = 0;
-      const step = 4;
+      // 采样步长随区域大小自适应：小图（快路径亮度）逐像素，大图稀疏采样，
+      // 采样点数量基本恒定（≈ 60×60），保证平均值稳定且开销可控
+      const step = Math.max(1, Math.round(Math.max(w, h) / 60));
       for (let y = y0; y < y0 + h; y += step) {
         for (let x = x0; x < x0 + w; x += step) {
           const i = (y * size.width + x) * 4;
@@ -1017,11 +1360,76 @@ class Island {
     }
   }
 
-  applyGlass() {
+  applyGlass(deferMs) {
     const mode = this.effectiveGlassMode();
     this.glassFailed = false;
-    this.send('island:glassmode', { mode });
-    this.startGlass(); // 亮度循环始终运行
+    this.send('island:glassmode', { mode, noGeomCheck: !!process.env.SCI_GL_NO_GEOM_CHECK });
+    // GPU 液态玻璃：主进程完全不截屏（亮度由渲染层从视频帧算），停掉截屏循环
+    if (mode === 'webgl') {
+      this.stopGlass();
+      return;
+    }
+    // 其它模式：亮度循环始终运行；deferMs > 0 时延后启动（启动阶段把 I/O 让给首帧渲染）
+    if (deferMs > 0) {
+      clearTimeout(this.glassStartTimer);
+      this.glassStartTimer = setTimeout(() => {
+        this.glassStartTimer = null;
+        this.startGlass();
+      }, deferMs);
+    } else {
+      this.startGlass();
+    }
+  }
+
+  /** 渲染层 GPU 玻璃链路回报（亮度 / 取流状态 / 回退 / 统计） */
+  handleGlReport(d) {
+    if (!d || typeof d !== 'object') return;
+    if (d.type === 'brightness') {
+      if (typeof d.brightness === 'number') {
+        this.lastBrightness = d.brightness;
+        this.glBrightnessCount = (this.glBrightnessCount || 0) + 1;
+      }
+      return;
+    }
+    if (d.type === 'started') {
+      this.glActive = true;
+      this.glError = '';
+      this.stopGlass(); // 渲染层接管：主进程不再截屏
+      return;
+    }
+    if (d.type === 'stopped') {
+      this.glActive = false;
+      this.startGlass();
+      return;
+    }
+    if (d.type === 'stats') {
+      this.glStats = d.stats || null;
+      return;
+    }
+    if (d.type === 'fallback') {
+      this.glActive = false;
+      this.glError = String(d.reason || 'unknown');
+      if (this.effectiveGlassMode() !== 'liquid') {
+        this.glFallback = true; // 本次运行回退 CPU 液态玻璃（不改用户设置）
+        console.warn('[island] GPU 液态玻璃不可用，回退 CPU 液态玻璃:', this.glError);
+        this.applyGlass();
+        this.broadcastEvents();
+      }
+      return;
+    }
+  }
+
+  /** 窗口移动/尺寸变化时增量推送几何（GPU 玻璃的画布→屏幕映射依赖它）。
+      force=true 时忽略「模式/键值未变」的短路（动画结束后必须补推一次最终位置）。 */
+  pushGeomIfChanged(force) {
+    if (!this.win || this.win.isDestroyed()) return;
+    if (!force && this.effectiveGlassMode() !== 'webgl') return;
+    const g = this.geomPayload();
+    if (!g) return;
+    const key = `${g.win.x},${g.win.y},${g.win.width},${g.win.height},${g.disp.x},${g.disp.y},${g.scale}`;
+    if (!force && key === this.lastGeomKey) return;
+    this.lastGeomKey = key;
+    this.send('island:geom', g);
   }
 
   // ---------------- 生命周期 ----------------
@@ -1071,6 +1479,9 @@ class Island {
         nodeIntegration: false,
         sandbox: true,
         backgroundThrottling: false,
+        spellcheck: false,   // 不加载拼写检查词典（省渲染进程内存）
+        enableWebSQL: false,
+        v8CacheOptions: 'code', // 预编译 JS 缓存：二次启动省去解析/编译
       },
     });
     this.win.setAlwaysOnTop(true, 'screen-saver');
@@ -1104,15 +1515,30 @@ class Island {
         this.win.destroy();
       }
     });
+    // 等首帧真正绘制完成再显示窗口（避免先出现一个空白/半成品帧）。
+    // 注意：不 await —— 显示时机不应拖慢主进程后续初始化（探针启动等）。
+    let shown = false;
+    const show = () => {
+      if (shown) return;
+      shown = true;
+      perf.mark('first-shown');
+      if (this.win && !this.win.isDestroyed()) this.win.showInactive();
+    };
+    this.win.once('ready-to-show', show);
+    const showFallback = setTimeout(show, 500); // 兜底：ready-to-show 未触发也要显示
+    this.win.once('closed', () => clearTimeout(showFallback));
     await this.win.loadFile(path.join(__dirname, '..', 'renderer', 'island', 'index.html'));
-    this.win.showInactive();
+    perf.mark('did-finish-load');
     // 截屏排除自身（WDA_EXCLUDEFROMCAPTURE，Win10 2004+ 支持）
     this.applyExclude();
     this.applyRegion();
     this.broadcastEvents();
     this.sendState();
     this.tickTimer = setInterval(() => this.tick(), 350);
-    this.applyGlass();
+    // GPU 液态玻璃：渲染层 getDisplayMedia() 的取流源由主进程指定（小岛所在显示器）
+    this.registerDisplayMedia();
+    // 玻璃/亮度采样循环延后启动：首帧显示时不做整屏截屏（把启动 I/O 让给首帧）
+    this.applyGlass(450);
     this.bindDisplayEvents();
   }
 
@@ -1136,6 +1562,8 @@ class Island {
   destroy() {
     this.quitting = true;
     if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this.glassStartTimer) clearTimeout(this.glassStartTimer);
+    this.glassStartTimer = null;
     this.tickTimer = null;
     this.stopGlass();
     if (this.win && !this.win.isDestroyed()) this.win.destroy();
@@ -1145,4 +1573,7 @@ class Island {
 
 const island = new Island();
 island.decideState = decideState; // 供测试
+island.perfAnim = perfAnim; // 供 --perf 采集
+island.perfCapture = perfCapture;
+island.perfProbe = perfProbe;
 module.exports = island;

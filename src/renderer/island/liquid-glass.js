@@ -79,8 +79,11 @@
     const hw = Math.max(1, (rect.w / 2) * dpr);
     const hh = Math.max(1, (rect.h / 2) * dpr);
     const r = Math.max(0.5, rect.r * dpr);
-    const band = Math.max(6, Math.min(64, o.refractWidth || Math.round(rect.h * 0.2))) * dpr;
-    const maxD = Math.max(6, Math.min(18, o.maxRefract || Math.round(rect.h * 0.07)));
+    // 折射带宽度/最大位移按玻璃高度自适应。下限必须足够小：细条（灵动岛）
+    // 高度只有 26px 上下，若沿用 6px 的下限，整条细条都会被折射带覆盖并推开，
+    // 看起来像"糊成一团"。
+    const band = Math.max(3, Math.min(64, o.refractWidth || Math.round(rect.h * 0.2))) * dpr;
+    const maxD = Math.max(2, Math.min(18, o.maxRefract || Math.round(rect.h * 0.07)));
     const scale = Math.max(24, Math.round(maxD * 4));
     const amp = 255 / scale;
     for (let y = 0; y < c.height; y++) {
@@ -139,7 +142,7 @@
     const hw = (rect.w / 2) * dpr;
     const hh = (rect.h / 2) * dpr;
     const r = Math.max(0.5, rect.r * dpr);
-    const bleedW = Math.max(1, o.bleedWidth) * dpr;
+    const bleedW = Math.max(3, Math.min(10, o.bleedWidth || Math.round(rect.h * 0.15))) * dpr;
     for (let y = 0; y < c.height; y++) {
       for (let x = 0; x < c.width; x++) {
         const i = (y * c.width + x) * 4;
@@ -175,7 +178,12 @@
     const hw = (rect.w / 2) * dpr;
     const hh = (rect.h / 2) * dpr;
     const r = Math.max(0.5, rect.r * dpr);
-    const glow = Math.max(1, o.glow) * dpr;
+    // 高光带宽度同样按高度自适应：固定 6px 在 26px 高的细条上会糊掉整条边缘
+    const glow = Math.max(1.5, Math.min(8, o.glow || rect.h * 0.1)) * dpr;
+    // 高光强度系数（0 = 完全无高光，1 = 默认）：只缩放高光层，折射/渗色基色不变
+    const glowK = typeof o.glowK === 'number' ? Math.max(0, Math.min(2, o.glowK)) : 1;
+    const specOpacity = o.specOpacity * glowK;
+    const topBoost = o.topBoost * glowK;
     for (let y = 0; y < c.height; y++) {
       for (let x = 0; x < c.width; x++) {
         const i = (y * c.width + x) * 4;
@@ -183,8 +191,8 @@
         const sd = sdRoundRect(x, y, cx, cy, hw, hh, r);
         if (sd < 0 && sd > -glow) {
           const t = 1 - smoothstep(-sd / glow); // 贴边最亮
-          a = t * o.specOpacity;
-          if (y < cy) a = Math.min(1, a + o.topBoost * (1 + sd / glow) * 0.5); // 上半缘增强
+          a = t * specOpacity;
+          if (y < cy) a = Math.min(1, a + topBoost * (1 + sd / glow) * 0.5); // 上半缘增强
         }
         data[i] = 255;
         data[i + 1] = 255;
@@ -206,12 +214,13 @@
   function apply(filterId, rect, opts) {
     const o = Object.assign(
       {
-        // 折射：0 = 按玻璃高度自适应用（BAND≈34%高、MAXD≈7%高）
+        // 折射：0 = 按玻璃高度自适应用（BAND≈20%高、MAXD≈7%高）
         refractWidth: 0, maxRefract: 0,
-        // 渗色：边缘环带宽、小模糊半径、叠加透明度
-        bleedWidth: 10, bleedBlur: 12, bleedOpacity: 0.7,
-        // 高光：边缘亮带宽、透明度、顶部增量
-        glow: 4, specOpacity: 0.6, topBoost: 0.4,
+        // 渗色/高光：0 = 按玻璃高度自适应（细条这类很小的玻璃必须收窄，
+        // 否则整条边缘都被渗色和高光糊住）
+        bleedWidth: 0, bleedBlur: 0, bleedOpacity: 0.7,
+        // glowK：高光强度系数（0 = 无高光，1 = 默认），由「玻璃高光强度」设置驱动
+        glow: 0, specOpacity: 0.72, topBoost: 0.5, glowK: 1,
       },
       opts || {}
     );
@@ -229,8 +238,10 @@
 
     // feDisplacementMap 的 scale 必须与位移图编码时的 SCALE 完全一致，
     // 否则位移量会被二次缩放（折射强度错误），故按同一公式重算。
-    const maxD = Math.max(6, Math.min(18, o.maxRefract || Math.round(rect.h * 0.07)));
+    const maxD = Math.max(2, Math.min(18, o.maxRefract || Math.round(rect.h * 0.07)));
     const scale = Math.max(24, Math.round(maxD * 4));
+    // 渗色模糊半径同样按高度自适应（细条上 12px 的模糊会糊掉整条边缘）
+    const bleedBlur = Math.max(4, Math.min(12, o.bleedBlur || Math.round(rect.h * 0.18)));
 
     // filter 结构变更（含 refract scale）或首次：整体重建
     let svg = document.getElementById('lg-svg');
@@ -262,7 +273,7 @@
         // ① 边缘折射：中心零位移（1:1 清晰），边缘带按 SDF 法线向外推
         `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="refracted"/>` +
         // ② 边缘渗色：小半径模糊背景 → 裁到边缘环带 → 降透明度 → 叠回
-        `<feGaussianBlur in="SourceGraphic" stdDeviation="${o.bleedBlur}" result="bleedSrc"/>` +
+        `<feGaussianBlur in="SourceGraphic" stdDeviation="${bleedBlur}" result="bleedSrc"/>` +
         `<feComposite in="bleedSrc" in2="bleedMask" operator="in" result="bleedEdge"/>` +
         `<feComponentTransfer in="bleedEdge" result="bleedFaded"><feFuncA type="linear" slope="${o.bleedOpacity}"/></feComponentTransfer>` +
         `<feBlend in="refracted" in2="bleedFaded" mode="normal" result="withBleed"/>` +

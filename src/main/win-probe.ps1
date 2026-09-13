@@ -33,6 +33,95 @@ public static class Probe {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+  // ---- fast window enumeration helpers (compiled: the per-window loop must NOT
+  //      run in PowerShell - a scriptblock delegate + New-Object per window costs
+  //      far more than the Win32 calls themselves) ----
+  public static string GetClassOf(IntPtr h) {
+    var sb = new System.Text.StringBuilder(256);
+    GetClassName(h, sb, 256);
+    return sb.ToString();
+  }
+  public static string GetTitleOf(IntPtr h) {
+    var sb = new System.Text.StringBuilder(256);
+    GetWindowText(h, sb, 256);
+    return sb.ToString();
+  }
+  public static int[] GetRectOf(IntPtr h) {
+    RECT r;
+    if (!GetWindowRect(h, out r)) return null;
+    return new int[] { r.Left, r.Top, r.Right, r.Bottom };
+  }
+  private static System.Collections.Generic.List<long> _cands;
+  private static uint _myPid;
+  private static uint[] _pids;
+  private static string[] _classes;
+  private static string[] _black;
+  private static int _minW, _maxW, _minH, _maxH;
+  private static bool _topMost;
+
+  private static bool CandProc(IntPtr h, IntPtr l) {
+    try {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      if (_pids != null) {
+        bool ok = false;
+        for (int i = 0; i < _pids.Length; i++) { if (_pids[i] == pid) { ok = true; break; } }
+        if (!ok) return true;
+      } else if (pid == _myPid) {
+        return true;
+      }
+      if (!IsWindowVisible(h)) return true;
+      string cls = GetClassOf(h);
+      if (_classes != null) {
+        bool ok2 = false;
+        for (int i = 0; i < _classes.Length; i++) { if (_classes[i] == cls) { ok2 = true; break; } }
+        if (!ok2) return true;
+      }
+      if (_black != null) {
+        for (int i = 0; i < _black.Length; i++) { if (_black[i] == cls) return true; }
+      }
+      if (_topMost) {
+        long ex = GetWindowLongPtr(h, -20).ToInt64();
+        if ((ex & 0x8L) == 0) return true;
+      }
+      RECT r;
+      if (!GetWindowRect(h, out r)) return true;
+      int w = r.Right - r.Left;
+      int hh = r.Bottom - r.Top;
+      if (w < _minW || w > _maxW || hh < _minH || hh > _maxH) return true;
+      int cloaked = 0;
+      DwmGetWindowAttribute(h, 14, out cloaked, 4);
+      if (cloaked != 0) return true;
+      _cands.Add(h.ToInt64());
+    } catch {
+      /* never break enumeration */
+    }
+    return true;
+  }
+
+  // visible windows of the given processes whose class is in classes[]
+  public static long[] FindClassWindows(uint[] pids, string[] classes) {
+    _pids = pids; _classes = classes; _black = null; _topMost = false;
+    _minW = 0; _maxW = 100000; _minH = 0; _maxH = 100000;
+    _cands = new System.Collections.Generic.List<long>(16);
+    EnumWindows(new EnumWindowsProc(CandProc), IntPtr.Zero);
+    return _cands.ToArray();
+  }
+
+  // generic notification candidates: not ours, visible, not blacklisted, topmost,
+  // notification-sized, not DWM-cloaked
+  public static long[] FindNotifCandidates(uint myPid, string[] blacklist, int minW, int maxW, int minH, int maxH) {
+    _pids = null; _myPid = myPid; _classes = null; _black = blacklist; _topMost = true;
+    _minW = minW; _maxW = maxW; _minH = minH; _maxH = maxH;
+    _cands = new System.Collections.Generic.List<long>(16);
+    EnumWindows(new EnumWindowsProc(CandProc), IntPtr.Zero);
+    return _cands.ToArray();
+  }
+
+  // ---- desktop wallpaper (SPI_SETDESKWALLPAPER = 20) ----
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, string pvParam, uint fWinIni);
 }
 "@
 Add-Type -TypeDefinition $code
@@ -44,6 +133,8 @@ $regionFile = Join-Path $env:TEMP 'sci-region-cmd.txt'
 $excludeFile = Join-Path $env:TEMP 'sci-exclude-cmd.txt'
 $excludeResultFile = Join-Path $env:TEMP 'sci-exclude-result.txt'
 $ptFile = Join-Path $env:TEMP 'sci-transparent-cmd.txt'
+$wallpaperFile = Join-Path $env:TEMP 'sci-wallpaper-cmd.txt'
+$wallpaperResultFile = Join-Path $env:TEMP 'sci-wallpaper-result.txt'
 $script:toastCounter = 0
 $script:toasts = @()
 $script:notifFp = @{}
@@ -76,36 +167,22 @@ function Get-NotificationText([intptr]$hwnd) {
   }
 }
 
-# -- enumerate visible ShellExperienceHost windows (toast host) --
+# -- enumerate visible ShellExperienceHost toast windows --
 # Only "Windows.UI.Core.CoreWindow" windows are toast notifications;
 # this excludes volume/brightness flyouts and other shell overlays.
+# Enumeration runs in compiled code (FindClassWindows) - only the few toast
+# windows reach the PowerShell side.
 function Get-Toasts {
   $result = @()
   $exp = Get-Process -Name 'ShellExperienceHost' -ErrorAction SilentlyContinue
   if (-not $exp) { return $result }
-  $pids = @{}
-  foreach ($p in $exp) { $pids[$p.Id] = $true }
-  $found = [System.Collections.ArrayList]::new()
-  $callback = [Probe+EnumWindowsProc]{
-    param($h, $l)
-    $pid2 = 0
-    [Probe]::GetWindowThreadProcessId($h, [ref]$pid2) | Out-Null
-    if ($pids.ContainsKey([int]$pid2)) {
-      if ([Probe]::IsWindowVisible($h)) {
-        $sb = New-Object System.Text.StringBuilder 256
-        [void][Probe]::GetClassName($h, $sb, 256)
-        if ($sb.ToString() -eq 'Windows.UI.Core.CoreWindow') {
-          [void]$found.Add($h)
-        }
-      }
-    }
-    return $true
-  }
-  [Probe]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
-  foreach ($h in $found) {
-    $info = Get-NotificationText($h)
+  $pids = [uint32[]]@($exp | ForEach-Object { [uint32]$_.Id })
+  if ($pids.Length -eq 0) { return $result }
+  $handles = [Probe]::FindClassWindows($pids, [string[]]@('Windows.UI.Core.CoreWindow'))
+  foreach ($h in $handles) {
+    $info = Get-NotificationText([intptr]$h)
     if ($info -ne '') {
-      $result += ($h.ToInt64().ToString() + '|' + $info)
+      $result += ($h.ToString() + '|' + $info)
     }
   }
   return $result
@@ -120,38 +197,24 @@ function Get-Toasts {
 function Get-GenericNotifs {
   $result = @()
   $myPid = 0
-  try { $myPid = [int]$env:LGC_PID } catch { $myPid = 0 }
-  $found = [System.Collections.ArrayList]::new()
-  $callback = [Probe+EnumWindowsProc]{
-    param($h, $l)
-    $winPid = 0
-    [Probe]::GetWindowThreadProcessId($h, [ref]$winPid) | Out-Null
-    if ($winPid -eq $myPid) { return $true }
-    if (-not [Probe]::IsWindowVisible($h)) { return $true }
-    $sb = New-Object System.Text.StringBuilder 256
-    [void][Probe]::GetClassName($h, $sb, 256)
-    $cls = $sb.ToString()
-    if ($script:BLACKLIST -contains $cls) { return $true }
-    $ex = [Probe]::GetWindowLongPtr($h, -20).ToInt64()
-    if (($ex -band 0x8) -eq 0) { return $true } # require WS_EX_TOPMOST (notification bubbles are topmost)
-    $r = [Probe+RECT]::new()
-    if (-not [Probe]::GetWindowRect($h, [ref]$r)) { return $true }
-    $w = $r.Right - $r.Left
-    $hh = $r.Bottom - $r.Top
-    if ($w -lt 100 -or $w -gt 720 -or $hh -lt 40 -or $hh -gt 520) { return $true }
-    $cloaked = 0
-    [void][Probe]::DwmGetWindowAttribute($h, 14, [ref]$cloaked, 4) # DWMWA_CLOAKED=14
-    if ($cloaked -ne 0) { return $true }
-    $sb2 = New-Object System.Text.StringBuilder 256
-    [void][Probe]::GetWindowText($h, $sb2, 256)
-    $key = $h.ToInt64().ToString()
-    $fp = "$($r.Left),$($r.Top),$w,$hh|$($sb2.ToString())"
-    if ($script:notifFp.ContainsKey($key) -and $script:notifFp[$key] -eq $fp) { return $true }
+  try { $myPid = [uint32]$env:LGC_PID } catch { $myPid = 0 }
+  # compiled enumeration: filtering (pid/visible/blacklist/topmost/size/cloaked)
+  # happens in C#; only the surviving candidates are inspected from PowerShell
+  $handles = [Probe]::FindNotifCandidates($myPid, [string[]]$script:BLACKLIST, 100, 720, 40, 520)
+  $new = @()
+  foreach ($h in $handles) {
+    $hInt = [intptr]$h
+    $r = [Probe]::GetRectOf($hInt)
+    if ($null -eq $r) { continue }
+    $w = $r[2] - $r[0]
+    $hh = $r[3] - $r[1]
+    $title = [Probe]::GetTitleOf($hInt)
+    $key = $h.ToString()
+    $fp = "$($r[0]),$($r[1]),$w,$hh|$title"
+    if ($script:notifFp.ContainsKey($key) -and $script:notifFp[$key] -eq $fp) { continue }
     $script:notifFp[$key] = $fp
-    [void]$found.Add($h)
-    return $true
+    $new += $hInt
   }
-  [Probe]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
   # sweep dead window entries every 25 cycles
   $script:notifSweep += 1
   if ($script:notifSweep -ge 25) {
@@ -162,10 +225,10 @@ function Get-GenericNotifs {
     }
     foreach ($k in $dead) { [void]$script:notifFp.Remove($k) }
   }
-  foreach ($h in $found) {
-    $info = Get-NotificationText($h)
+  foreach ($hInt in $new) {
+    $info = Get-NotificationText($hInt)
     if ($info -ne '') {
-      $result += ($h.ToInt64().ToString() + '|' + $info)
+      $result += ($hInt.ToInt64().ToString() + '|' + $info)
     }
   }
   return $result
@@ -234,11 +297,32 @@ while ($true) {
     }
   }
 
+  # -- desktop wallpaper command (content = image path; SPI_SETDESKWALLPAPER=20, fWinIni=3) --
+  if (Test-Path -LiteralPath $wallpaperFile) {
+    try {
+      $wpPath = (Get-Content -LiteralPath $wallpaperFile -Raw).Trim()
+      if ($wpPath.Length -gt 0 -and (Test-Path -LiteralPath $wpPath)) {
+        $setOk = [Probe]::SystemParametersInfo(20, 0, $wpPath, 3)
+        Set-Content -LiteralPath $wallpaperResultFile -Value ("set=" + $setOk + " path=" + $wpPath) -Encoding ASCII
+      } else {
+        Set-Content -LiteralPath $wallpaperResultFile -Value "set=False path-missing" -Encoding ASCII
+      }
+      Remove-Item -LiteralPath $wallpaperFile -Force -ErrorAction SilentlyContinue
+    } catch {
+      Set-Content -LiteralPath $wallpaperResultFile -Value ("set=False error=" + $_.Exception.Message) -Encoding ASCII
+      Remove-Item -LiteralPath $wallpaperFile -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   $line = [Console]::In.ReadLine()
   if ($null -eq $line) { break }
   $line = $line.Trim()
   if ($line -eq 'quit') { break }
-  if ($line -ne 'probe') { continue }
+  # 'probe-lite': foreground/cursor/last-input only, skip notification enumeration
+  # (used while the island is auto-hidden in fullscreen -> saves CPU)
+  $lite = $false
+  if ($line -eq 'probe-lite') { $lite = $true }
+  elseif ($line -ne 'probe') { continue }
 
   $fg = [Probe]::GetForegroundWindow()
   $fgClass = ''
@@ -259,13 +343,17 @@ while ($true) {
   $gotLi = [Probe]::GetLastInputInfo([ref]$li)
   if ($gotLi) { $liVal = $li.dwTime } else { $liVal = 0 }
 
-  # -- toast check: shell toasts every 5 probes (~1.75s), generic bubbles every probe --
-  $script:toastCounter += 1
-  if ($script:toastCounter -ge 5) {
-    $script:toastCounter = 0
-    $script:toasts = Get-Toasts
+  # -- toast check: shell toasts every 3 probes, generic bubbles every probe --
+  # probe-lite keeps the previous notification list (no enumeration, so no
+  # "notification disappeared" false positives)
+  if (-not $lite) {
+    $script:toastCounter += 1
+    if ($script:toastCounter -ge 3) {
+      $script:toastCounter = 0
+      $script:toasts = Get-Toasts
+    }
+    $script:toasts += Get-GenericNotifs
   }
-  $script:toasts += Get-GenericNotifs
 
   $rect = $null
   if ($ok) {

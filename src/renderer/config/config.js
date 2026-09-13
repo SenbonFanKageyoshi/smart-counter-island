@@ -35,6 +35,15 @@ async function patch(p) {
   toast();
 }
 
+/** 开机自启：勾选框按注册表真实状态显示（而不是设置里的期望值） */
+function renderAutoStart(st) {
+  if (!st) return;
+  $('#autoStart').checked = !!st.enabled;
+  const tag = $('#autoStartState');
+  tag.textContent = st.enabled ? '已启用' : st.blocked ? '已被系统禁用' : '未启用';
+  $('#autoStartPath').textContent = st.enabled && st.path ? (st.matches ? '' : `当前指向：${st.path}`) : '';
+}
+
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -60,6 +69,7 @@ function localInputValue(iso) {
 async function init() {
   const data = await window.config.get();
   S = data.settings;
+  renderAutoStart(data.autoStart);
   $('#ver').textContent = `v${data.meta.version} · ${data.meta.platform === 'win32' ? 'Windows' : data.meta.platform} ${data.meta.osRelease}`;
   $('#about-ver').textContent = `版本 v${data.meta.version} · Electron ${data.meta.electron}`;
 
@@ -76,8 +86,35 @@ async function init() {
   $('#opZoom').value = Math.round((S.ui.opacity.zoom ?? 0.96) * 100);
   $('#alwaysOnTop').checked = !!S.ui.alwaysOnTop;
   $('#showSeconds').checked = !!S.ui.showSeconds;
+  $('#glassGlow').value = typeof S.ui.glassGlow === 'number' ? S.ui.glassGlow : 100;
+  $('#gpuGlassFps').value = typeof S.ui.gpuGlassFps === 'number' ? S.ui.gpuGlassFps : 30;
+  $('#glEdgeGlow').value = typeof S.ui.glEdgeGlow === 'number' ? S.ui.glEdgeGlow : 100;
+  $('#glBottomShade').value = typeof S.ui.glBottomShade === 'number' ? S.ui.glBottomShade : 100;
+  $('#glRefract').value = typeof S.ui.glRefract === 'number' ? S.ui.glRefract : 100;
+  $('#glBand').value = typeof S.ui.glBand === 'number' ? S.ui.glBand : 100;
+ $('#dayRounding').value = S.ui.dayRounding === 'ceil' || S.ui.dayRounding === 'round' ? S.ui.dayRounding : 'floor';
   $('#showPast').checked = !!S.ui.showPast;
   $('#classical').checked = !!S.ui.classical;
+  // 壁纸
+  const wp = S.ui.wallpaper || {};
+  if ($('#wpEnabled')) {
+    $('#wpEnabled').checked = !!wp.enabled;
+    $('#wpSource').value = wp.source === 'folder' ? 'folder' : 'gradient';
+    $('#wpFolder').value = wp.folder || '';
+    $('#wpBuiltin').checked = wp.useBuiltinQuotes !== false;
+    $('#wpQuotes').value = wp.quotes || '';
+    $('#wpPosition').value = wp.position || 'center';
+    $('#wpScale').value = typeof wp.scale === 'number' ? wp.scale : 100;
+    $('#wpSchool').value = wp.school || '';
+    $('#wpSubline').value = wp.subline || '';
+    $('#wpDaily').checked = wp.autoDaily !== false;
+    $('#wpInterval').value = String(typeof wp.intervalMin === 'number' ? wp.intervalMin : 1440);
+    $('#wpOrder').value = wp.order === 'reverse' || wp.order === 'random' ? wp.order : 'seq';
+    $('#wpFit').value = wp.fit === 'contain' ? 'contain' : 'cover';
+    $('#wpDim').value = Math.round((typeof wp.dim === 'number' ? wp.dim : 0.32) * 100);
+    $('#wpScrim').checked = wp.scrim !== false;
+    wpStatusText(wp);
+  }
 
   // 三种状态的位置
   const states = ['strip', 'expanded', 'zoom'];
@@ -598,10 +635,20 @@ bind('#opExpanded', (el) => ({ ui: { opacity: { expanded: parseInt(el.value, 10)
 bind('#opZoom', (el) => ({ ui: { opacity: { zoom: parseInt(el.value, 10) / 100 } } }));
 bind('#classical', (el) => ({ ui: { classical: el.checked } }));
 bind('#darkMode', (el) => ({ ui: { darkMode: el.checked } }));
-bind('#autoStart', (el) => ({ ui: { autoStart: el.checked } }));
+// 开机自启：写完注册表后按真实状态回填（写失败 / 被系统禁用时不会显示成"已勾上"）
+const autoStartEl = $('#autoStart');
+if (autoStartEl) {
+  autoStartEl.addEventListener('change', async () => {
+    await patch({ ui: { autoStart: autoStartEl.checked } });
+    renderAutoStart(await window.config.autoStart());
+  });
+}
 bind('#stripStyle', (el) => ({ ui: { stripStyle: el.value } }));
 bind('#alwaysOnTop', (el) => ({ ui: { alwaysOnTop: el.checked } }));
 bind('#showSeconds', (el) => ({ ui: { showSeconds: el.checked } }));
+bind('#glassGlow', (el) => ({ ui: { glassGlow: Math.max(0, Math.min(200, parseInt(el.value, 10) || 0)) } }));
+bind('#gpuGlassFps', (el) => ({ ui: { gpuGlassFps: Math.max(1, Math.min(60, parseInt(el.value, 10) || 30)) } }));
+bind('#dayRounding', (el) => ({ ui: { dayRounding: el.value } }));
 bind('#showPast', (el) => ({ ui: { showPast: el.checked } }));
 bind('#smartEnabled', (el) => ({ smart: { enabled: el.checked } }));
 bind('#notifyEnabled', (el) => ({ smart: { notifyEnabled: el.checked } }));
@@ -619,6 +666,139 @@ bind('#notifyShake', (el) => ({ smart: { notifyShake: el.checked } }));
 bind('#bgRefreshSec', (el) => ({ smart: { bgRefreshSec: Math.max(0.5, Math.min(10, parseFloat(el.value) || 1.6)) } }));
 bind('#hoverMargin', (el) => ({ smart: { hoverMargin: Math.max(6, Math.min(120, parseInt(el.value, 10) || 30)) } }));
 bind('#scheduleEnabled', (el) => ({ schedule: { enabled: el.checked } }));
+
+/* ---------- 壁纸 ---------- */
+
+bind('#wpEnabled', (el) => ({ ui: { wallpaper: { enabled: el.checked } } }));
+bind('#wpSource', (el) => ({ ui: { wallpaper: { source: el.value } } }));
+bind('#wpFolder', (el) => ({ ui: { wallpaper: { folder: el.value.trim() } } }));
+bind('#wpBuiltin', (el) => ({ ui: { wallpaper: { useBuiltinQuotes: el.checked } } }));
+bind('#wpQuotes', (el) => ({ ui: { wallpaper: { quotes: el.value } } }));
+bind('#wpPosition', (el) => ({ ui: { wallpaper: { position: el.value } } }));
+bind('#wpScale', (el) => ({ ui: { wallpaper: { scale: Math.max(40, Math.min(250, parseInt(el.value, 10) || 100)) } } }));
+bind('#wpSchool', (el) => ({ ui: { wallpaper: { school: el.value } } }));
+bind('#wpSubline', (el) => ({ ui: { wallpaper: { subline: el.value } } }));
+bind('#wpDaily', (el) => ({ ui: { wallpaper: { autoDaily: el.checked } } }));
+bind('#wpInterval', (el) => ({ ui: { wallpaper: { intervalMin: Math.max(0, parseInt(el.value, 10) || 0) } } }));
+bind('#wpOrder', (el) => ({ ui: { wallpaper: { order: el.value } } }));
+bind('#wpFit', (el) => ({ ui: { wallpaper: { fit: el.value } } }));
+bind('#wpDim', (el) => ({ ui: { wallpaper: { dim: Math.max(0, Math.min(70, parseInt(el.value, 10) || 0)) / 100 } } }));
+bind('#wpScrim', (el) => ({ ui: { wallpaper: { scrim: el.checked } } }));
+bind('#glEdgeGlow', (el) => ({ ui: { glEdgeGlow: Math.max(0, Math.min(300, parseInt(el.value, 10) || 0)) } }));
+bind('#glBottomShade', (el) => ({ ui: { glBottomShade: Math.max(0, Math.min(300, parseInt(el.value, 10) || 0)) } }));
+bind('#glRefract', (el) => ({ ui: { glRefract: Math.max(0, Math.min(300, parseInt(el.value, 10) || 0)) } }));
+bind('#glBand', (el) => ({ ui: { glBand: Math.max(0, Math.min(300, parseInt(el.value, 10) || 0)) } }));
+
+function wpStatus(text) {
+  const el = $('#wpStatus');
+  if (el) el.textContent = text || '';
+}
+
+/** 状态行：最近一次更换 + 下一次自动轮换的时间 */
+function wpStatusText(wp) {
+  const freq = { 1440: '每天', 720: '每 12 小时', 360: '每 6 小时', 120: '每 2 小时', 60: '每 1 小时', 30: '每 30 分钟', 10: '每 10 分钟', 5: '每 5 分钟', 0: '每次启动' };
+  const iv = typeof wp.intervalMin === 'number' ? wp.intervalMin : 1440;
+  let next = '';
+  if (wp.enabled && wp.autoDaily !== false) {
+    if (iv === 0) next = ' · 下次：下次启动时';
+    else if (iv >= 1440) next = ' · 下次：明天首次检查时';
+    else {
+      const t = (wp.lastRotateAt || 0) + iv * 60000;
+      const d = new Date(Math.max(Date.now(), t));
+      next = ` · 下次：${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+  }
+  const last = wp.lastDate
+    ? `最近更换：${wp.lastDate}${wp.lastSource ? ' · ' + wp.lastSource : ''}${wp.lastQuote ? ' · ' + wp.lastQuote : ''}`
+    : '尚未更换过';
+  wpStatus(last + (wp.enabled ? `（${freq[iv] || iv + ' 分钟'}）` : '') + next);
+}
+
+/** 重新读取设置并刷新壁纸状态行（更换/恢复后调用） */
+async function refreshWallpaper() {
+  try {
+    const data = await window.config.get();
+    S = data.settings;
+    wpStatusText(S.ui.wallpaper || {});
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+const wpNowBtn = $('#wpNow');
+if (wpNowBtn) {
+  wpNowBtn.addEventListener('click', async () => {
+    wpStatus('正在生成并设置壁纸…');
+    const r = await window.config.wallpaper.rotate({ shift: 1 });
+    wpStatus(
+      r && r.ok
+        ? `已更换（${r.source === 'folder' ? `图片文件夹 ${r.index}/${r.total}` : '内置底纹'}）· ${r.quote || ''}`
+        : `更换失败：${(r && r.reason) || '未知原因'}`
+    );
+    await refreshWallpaper();
+  });
+}
+const wpPickBtn = $('#wpPick');
+if (wpPickBtn) {
+  wpPickBtn.addEventListener('click', async () => {
+    const r = await window.config.wallpaper.pickFolder();
+    if (r && r.ok) {
+      $('#wpFolder').value = r.folder;
+      wpStatus(`已选择文件夹（${r.count} 张图片）`);
+      patch({ ui: { wallpaper: { folder: r.folder } } });
+    }
+  });
+}
+const wpOpenBtn = $('#wpOpen');
+if (wpOpenBtn) {
+  wpOpenBtn.addEventListener('click', async () => {
+    const r = await window.config.wallpaper.openFolder();
+    wpStatus(r && r.ok ? `已打开：${r.folder}（把壁纸图片放进去即可）` : `打开失败：${(r && r.reason) || '未知原因'}`);
+  });
+}
+const wpRestoreBtn = $('#wpRestore');
+if (wpRestoreBtn) {
+  wpRestoreBtn.addEventListener('click', async () => {
+    const r = await window.config.wallpaper.restore();
+    wpStatus(r && r.ok ? '已恢复为启用前的桌面壁纸' : `恢复失败：${(r && r.reason) || '未记录原壁纸'}`);
+  });
+}
+const wpPreviewBtn = $('#wpPreview');
+if (wpPreviewBtn) {
+  wpPreviewBtn.addEventListener('click', async () => {
+    wpStatus('正在生成预览…');
+    const r = await window.config.wallpaper.preview(currentWallpaperForm());
+    if (r && r.ok) {
+      const img = $('#wpPreviewImg');
+      img.src = r.dataUrl;
+      img.style.display = 'block';
+      wpStatus(`预览（${r.source === 'folder' ? `图片文件夹 · ${r.count} 张` : '内置底纹'} · 语录：${r.quote || ''}）`);
+    } else {
+      wpStatus(`预览失败：${(r && r.reason) || '未知原因'}`);
+    }
+  });
+}
+
+/** 取配置页表单上的壁纸设置（用于预览，不落盘） */
+function currentWallpaperForm() {
+  const g = (id) => {
+    const el = $(id);
+    return el ? (el.type === 'checkbox' ? el.checked : el.value) : undefined;
+  };
+  return {
+    source: g('#wpSource'),
+    folder: String(g('#wpFolder') || '').trim(),
+    quotes: g('#wpQuotes'),
+    useBuiltinQuotes: g('#wpBuiltin'),
+    position: g('#wpPosition'),
+    scale: parseInt(g('#wpScale'), 10) || 100,
+    school: g('#wpSchool'),
+    subline: g('#wpSubline'),
+    fit: g('#wpFit') === 'contain' ? 'contain' : 'cover',
+    dim: Math.max(0, Math.min(70, parseInt(g('#wpDim'), 10) || 0)) / 100,
+    scrim: g('#wpScrim'),
+  };
+}
 
 document.querySelectorAll('input[name="manualMode"]').forEach((r) =>
   r.addEventListener('change', () => r.checked && patch({ manual: { mode: r.value } }))

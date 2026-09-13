@@ -9,7 +9,10 @@
 </head>
 <body data-state="strip" data-glass="fake" data-ink="light">
   <div id="pill">
+    <!-- 玻璃层：CPU 路径用「背景图 + SVG 滤镜」（#glass），GPU 路径用旁边的 WebGL 画布。
+         两者分开是因为 canvas 是替换元素：只写 inset 撑不开它（宽高会退回后备缓冲尺寸）。 -->
     <div id="glass" class="glass"></div>
+    <canvas id="glass-gl" class="glass-gl" width="2" height="2"></canvas>
     <div id="glass-tint" class="glass-tint"></div>
     <div id="noise"></div>
     <div id="content"></div>
@@ -26,6 +29,7 @@
     <span class="n-hint">滑动收起</span>
   </div>
 <script src="liquid-glass.js"></script>
+<script src="glass-webgl.js"></script>
 <script src="island.js"></script>
 </body>
 </html>

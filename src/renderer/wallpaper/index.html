@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Wallpaper Renderer</title>
+<style>
+  html, body { margin: 0; background: #111; overflow: hidden; }
+  canvas { display: block; max-width: 100%; }
+</style>
+</head>
+<body>
+  <!-- 只用于离屏生成壁纸图片；显示与否无关紧要（窗口本身 show:false） -->
+  <canvas id="c" width="480" height="270"></canvas>
+  <script src="wallpaper.js"></script>
+</body>
+</html>

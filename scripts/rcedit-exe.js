@@ -21,16 +21,19 @@ function main() {
     console.error('找不到目标 exe:', exe);
     process.exit(1);
   }
+  const pkg = require(path.join(ROOT, 'package.json'));
+  const ver = `${pkg.version}.0`; // 版本资源用四段式
   execFileSync(RCEDIT, [
     exe,
     '--set-icon', ICON,
     '--set-version-string', 'ProductName', 'Smart Counter Island',
     '--set-version-string', 'FileDescription', 'Smart Counter Island - 高考/中考倒数日 灵动岛悬浮窗',
     '--set-version-string', 'CompanyName', 'Smart Counter Island',
-    '--set-file-version', '1.6.0.0',
-    '--set-product-version', '1.6.0.0',
+    '--set-version-string', 'LegalCopyright', 'MIT',
+    '--set-file-version', ver,
+    '--set-product-version', ver,
   ], { stdio: 'inherit' });
-  console.log('[rcedit] 已写入图标与版本信息:', exe);
+  console.log(`[rcedit] 已写入图标与版本信息 (${ver}):`, exe);
 }
 
 main();

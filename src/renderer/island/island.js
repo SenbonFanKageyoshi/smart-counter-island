@@ -8,7 +8,7 @@ const $ = (s) => document.querySelector(s);
 let state = 'strip';
 let events = [];
 let notify = null; // { title, body }
-let ui = { showSeconds: true, showPast: false, cycleEnabled: false, cycleSec: 6, classical: false, stripStyle: 'black', notifyShake: true };
+let ui = { showSeconds: true, showPast: false, dayRounding: 'floor', cycleEnabled: false, cycleSec: 6, classical: false, stripStyle: 'black', notifyShake: true };
 
 const ESC = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -31,19 +31,59 @@ function t(s) {
 
 /* ---------- 主进程事件 ---------- */
 
+/** GPU 玻璃：把主进程下发的窗口/显示器几何交给 WebGL 模块（含胶囊在窗口内的偏移） */
+function applyGeom(g) {
+  if (!g || !window.GlassWebGL) return;
+  const pr = $('#pill').getBoundingClientRect();
+  window.GlassWebGL.setGeom(Object.assign({}, g, { padX: pr.left, padY: pr.top }));
+}
+
 window.island.onState((s) => {
   state = s.state;
   document.body.dataset.state = state;
   $('#pill').style.opacity = s.opacity;
+  // GPU 玻璃需要窗口/显示器几何（画布像素 ↔ 屏幕物理像素的映射）
+  applyGeom(s.geom);
   updateGlassVisibility();
   render();
+});
+
+// 窗口移动/缩放时主进程增量推送几何 → 立即按新位置重绘（不需要等下一次视频帧）
+window.island.onGeom((g) => {
+  applyGeom(g);
+  if (document.body.dataset.glass === 'webgl' && window.GlassWebGL && window.GlassWebGL.isActive()) {
+    window.GlassWebGL.redraw();
+  }
 });
 
 window.island.onEvents((e) => {
   events = e.events || [];
   ui = { ...ui, ...(e.ui || {}) };
   // 细条样式：black（黑底白字）| glass（跟随玻璃效果）
-  document.body.dataset.strip = ui.stripStyle === 'glass' ? 'glass' : 'black';
+  const strip = ui.stripStyle === 'glass' ? 'glass' : 'black';
+  const stripChanged = strip !== document.body.dataset.strip;
+  document.body.dataset.strip = strip;
+  // 玻璃高光强度（%）：写入 CSS 变量供「表面光影」缩放，并通知两条链路按同一系数重算
+  //（折射/渗色的基色不变，只影响高光那一层）
+  const glowK = Math.max(0, Math.min(2, (typeof ui.glassGlow === 'number' ? ui.glassGlow : 100) / 100));
+  document.documentElement.style.setProperty('--glow-k', String(glowK));
+  if (window.GlassWebGL) {
+    window.GlassWebGL.setGlowK(glowK);
+    // GPU 玻璃帧率（只对 webgl 模式生效；CPU 链路用「背景刷新间隔」控制）
+    window.GlassWebGL.setFps(typeof ui.gpuGlassFps === 'number' ? ui.gpuGlassFps : 30);
+    // 高级设置：GPU 玻璃的边缘高光 / 底部阴影 / 折射强度 / 折射范围（100% = 默认）
+    window.GlassWebGL.setTune({
+      edgeGlow: pctK(ui.glEdgeGlow),
+      bottomShade: pctK(ui.glBottomShade),
+      refract: pctK(ui.glRefract),
+      band: pctK(ui.glBand),
+    });
+  }
+  scheduleLiquidGlass();
+  // 细条切换到玻璃样式：当前手上只有旧几何的图（或没有图），
+  // 先进入"等新图"再显示，避免闪出一帧错位的旧截图（主进程 250ms 内会推送新图）
+  if (stripChanged && state === 'strip' && strip === 'glass') setGlassWaiting(true);
+  updateGlassVisibility();
   render();
 });
 
@@ -105,17 +145,66 @@ function setGlassWaiting(waiting) {
   }
 }
 
+let glStatsTimer = null;
+let glNoGeomCheck = false; // 测试环境：跳过画布/窗口几何一致性自检
+
+/** 启动 GPU 液态玻璃取流 + 着色器（采集精度在取流时确定，所以改精度要重开） */
+function startGlassStream() {
+  return window.GlassWebGL.start(document.getElementById('glass-gl'), {
+    onBrightness: (b) => {
+      applyBrightness(b);
+      // 同步回主进程：诊断/测试需要读到真实亮度（webgl 模式下主进程已不再截屏）
+      if (window.island.reportGlass) window.island.reportGlass({ type: 'brightness', brightness: b });
+    },
+    noGeomCheck: glNoGeomCheck,
+    fps: typeof ui.gpuGlassFps === 'number' ? ui.gpuGlassFps : 30,
+    onFallback: (reason) => {
+      console.warn('[glass-webgl] 回退到 CPU 液态玻璃:', reason);
+      if (window.island.reportGlass) window.island.reportGlass({ type: 'fallback', reason: String(reason) });
+    },
+  }).then((okStream) => {
+    if (!okStream) return;
+    updateGlassVisibility();
+    window.GlassWebGL.redraw();
+    if (window.island.reportGlass) window.island.reportGlass({ type: 'started' });
+    // 周期性回传运行统计（--perf / --diag 用）
+    clearInterval(glStatsTimer);
+    glStatsTimer = setInterval(() => {
+      if (!window.GlassWebGL || !window.GlassWebGL.isActive()) return;
+      if (window.island.reportGlass) window.island.reportGlass({ type: 'stats', stats: window.GlassWebGL.stats() });
+    }, 5000);
+  });
+}
+
 window.island.onGlassMode((m) => {
-  document.body.dataset.glass = m.mode || 'fake';
+  const mode = m.mode || 'fake';
+  document.body.dataset.glass = mode;
+  glNoGeomCheck = !!m.noGeomCheck;
+  // GPU 液态玻璃：启动屏幕视频流 + WebGL 着色器；其它模式确保停掉取流
+  if (window.GlassWebGL) {
+    if (mode === 'webgl') {
+      startGlassStream();
+    } else if (window.GlassWebGL.isActive()) {
+      clearInterval(glStatsTimer);
+      window.GlassWebGL.stop();
+      if (window.island.reportGlass) window.island.reportGlass({ type: 'stopped' });
+    }
+  }
   updateGlassVisibility();
 });
 
 // 窗口尺寸动画信号：动画期间隐藏真实玻璃层（液态滤镜/合成层会逃逸 CSS 圆角
 // 裁剪，在放大/缩小时露出方形模糊边）。动画结束不立即恢复显示——旧截图与
 // 新窗口位置错位会闪出"方形模糊"帧；改为等待主进程推送新截屏（onGlass）后显示。
+// GPU 路径不需要等新图（视频流是连续的），动画结束直接重绘即可。
 window.island.onAnim((d) => {
   document.body.dataset.anim = d && d.on ? '1' : '0';
   if (!(d && d.on)) {
+    if (document.body.dataset.glass === 'webgl' && window.GlassWebGL) {
+      updateGlassVisibility();
+      window.GlassWebGL.redraw();
+      return;
+    }
     // 动画结束：窗口尺寸已稳定；若当前应显示玻璃，进入"等新图"状态（新截图由
     // 主进程在动画结束后立即抓取推送），同时重建滤镜资源
     const showGlass = glassShown();
@@ -125,22 +214,34 @@ window.island.onAnim((d) => {
   }
 });
 
-/** 当前状态是否应显示玻璃（真实模糊 capture 或 液态 liquid，且非小条/通知形态） */
+/** 当前状态是否应显示玻璃（GPU 液态玻璃 webgl / CPU 液态 liquid / 真实模糊 capture）。
+    横幅/倒计时窗口始终显示；细条（灵动岛）只在「细条样式=玻璃」时显示；
+    通知形态是黑底白字弹窗，从不显示玻璃。 */
 function glassShown() {
   const m = document.body.dataset.glass;
-  return (m === 'capture' || m === 'liquid') && (state === 'expanded' || state === 'zoom');
+  if (m !== 'capture' && m !== 'liquid' && m !== 'webgl') return false;
+  if (state === 'expanded' || state === 'zoom') return true;
+  if (state === 'strip') return document.body.dataset.strip === 'glass';
+  return false;
 }
 
 function updateGlassVisibility() {
-  // 玻璃仅在「放大版灵动岛」和「最大窗口」显示；细条（默认形态）不显示
+  // 玻璃按状态显示：横幅/倒计时窗口；细条仅当「细条样式=玻璃」；通知形态不显示
   const showGlass = glassShown();
-  // 等新图期间保持隐藏（避免旧图与窗口错位的方形模糊帧）
-  const display = showGlass && !glassWaiting ? 'block' : 'none';
+  const mode = document.body.dataset.glass;
+  const gpu = mode === 'webgl' && window.GlassWebGL && window.GlassWebGL.isActive();
+  const gpuCanvas = document.getElementById('glass-gl');
+  if (gpuCanvas) gpuCanvas.style.display = showGlass && gpu ? 'block' : 'none';
+  // CPU 路径：等新图期间保持隐藏（避免旧图与窗口错位的方形模糊帧）
+  const display = showGlass && !gpu && !glassWaiting ? 'block' : 'none';
   $('#glass').style.display = display;
-  // 高光层与玻璃同步显示（strip/notify 等黑底形态不叠加高光）
+  // 高光层与玻璃同步显示（黑底形态不叠加高光）
   const tint = $('#glass-tint');
-  if (tint) tint.style.display = display;
-  if (showGlass && display === 'block') scheduleLiquidGlass();
+  if (tint) tint.style.display = showGlass && (gpu || display === 'block') ? 'block' : 'none';
+  if (showGlass && (gpu || display === 'block')) {
+    if (gpu) window.GlassWebGL.redraw();
+    else scheduleLiquidGlass();
+  }
 }
 
 /* ---------- 液态玻璃滤镜（liquid 模式专属：折射位移 + 渗色 + 镜面高光） ---------- */
@@ -170,9 +271,20 @@ function rebuildLiquidGlass() {
     h: pr.height,
     r: Math.max(1, radius),
   };
-  const ok = window.LiquidGlass.apply(window.LiquidGlass.FILTER_ID, rect);
+  const ok = window.LiquidGlass.apply(window.LiquidGlass.FILTER_ID, rect, { glowK: glowFactor() });
   // 失败（环境不支持等）：清掉内联滤镜，回退 CSS 兜底
   if (!ok) g.style.filter = '';
+}
+
+/** 玻璃高光强度系数（0–2，1 = 默认）：由「玻璃高光强度」设置驱动 */
+function glowFactor() {
+  const pct = typeof ui.glassGlow === 'number' ? ui.glassGlow : 100;
+  return Math.max(0, Math.min(2, pct / 100));
+}
+
+/** 高级设置里的百分比 → 系数（0–3，1 = 默认；非法值按默认处理） */
+function pctK(v) {
+  return typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(3, v / 100)) : 1;
 }
 
 /** 状态/尺寸变化后延迟重建（窗口缩放动画中多次触发，合并为一次） */
@@ -186,8 +298,9 @@ window.addEventListener('resize', scheduleLiquidGlass);
 let bgDark = false; // 白边状态（滞回记忆，防闪烁）
 let inkDark = false; // 深色文字状态（滞回记忆：亮暗背景在阈值附近波动时不反复闪字）
 
-window.island.onBrightness((data) => {
-  const b = data.brightness;
+/** 背景亮度 → 文字色/描边适配（CPU 路径由主进程推送，GPU 路径由 WebGL 模块回传） */
+function applyBrightness(b) {
+  if (typeof b !== 'number') return;
   // 文字颜色滞回：亮背景（>0.62）→ 深色文字；暗背景（<0.48）→ 白色文字；中间区间保持原样
   if (inkDark) {
     if (b < 0.48) inkDark = false;
@@ -200,7 +313,9 @@ window.island.onBrightness((data) => {
   if (b < 0.15) bgDark = true;
   else if (b > 0.25) bgDark = false;
   document.body.dataset.bg = bgDark ? 'dark' : 'light';
-});
+}
+
+window.island.onBrightness((data) => applyBrightness(data && data.brightness));
 
 /* ---------- 倒计时计算 ---------- */
 
@@ -216,7 +331,34 @@ function fmtHMS(ms) {
     m: p(Math.floor(t / 60000) % 60),
     s: p(Math.floor(t / 1000) % 60),
     d: Math.floor(t / 86400000),
+    hh: Math.floor(t / 3600000) % 24,
+    mm: Math.floor(t / 60000) % 60,
+    ss: Math.floor(t / 1000) % 60,
   };
+}
+
+/** 日期（天数）估算方式：向上取整 / 四舍五入 / 向下取整（默认） */
+function roundDays(ms, mode) {
+  const d = Math.max(0, ms) / 86400000;
+  if (mode === 'ceil') return Math.ceil(d);
+  if (mode === 'round') return Math.round(d);
+  return Math.floor(d);
+}
+
+/**
+ * 主时间单位：所有状态共用 —— 从「天」开始逐级下降，取第一个「够一个单位」的时间单位。
+ *   · 不足 1 天 → 主单位换成「时」，不足 1 小时 → 「分」，不足 1 分钟 → 「秒」
+ *   · 天数按「日期估算方式」取整后判断，因此向上取整时不足一天也算一天（仍显示天）
+ *   · sub = 比主单位更小的两级单位文本（如 ['20分','30秒']），供副行显示
+ */
+function timeUnits(ms, dayMode) {
+  const t0 = Math.max(0, ms);
+  const z = fmtHMS(t0);
+  const days = roundDays(t0, dayMode);
+  if (days >= 1) return { num: days, unit: '天', sub: [`${z.h}时`, `${z.m}分`, `${z.s}秒`] };
+  if (z.hh >= 1) return { num: z.hh, unit: '时', sub: [`${z.m}分`, `${z.s}秒`] };
+  if (z.mm >= 1) return { num: z.mm, unit: '分', sub: [`${z.s}秒`] };
+  return { num: z.ss, unit: '秒', sub: [] };
 }
 
 function sortedEvents() {
@@ -257,8 +399,9 @@ function currentInfo() {
   const hms = fmtHMS(ms);
   return {
     primary,
-    days: Math.max(0, hms.d),
+    days: roundDays(ms, ui.dayRounding),
     hms,
+    units: timeUnits(ms, ui.dayRounding),
     past: ms <= 0,
     list,
     idx,
@@ -266,6 +409,7 @@ function currentInfo() {
 }
 
 let shownPrimaryId = null; // 当前 DOM 展示的事件 id（轮播切换检测用）
+let shownUnit = ''; // 当前主时间单位（跨单位时需重建 DOM 以增删副行节点）
 
 function render() {
   const box = $('#content');
@@ -296,14 +440,14 @@ function render() {
       box.innerHTML = '';
       return;
     }
-    const { primary, days, hms, past } = info;
+    const { primary, units, past } = info;
     const emoji = ESC(primary.emoji || '⏰');
-    const name = ESC(primary.name || '事件');
+    shownUnit = past ? '' : units.unit;
     box.innerHTML = `
       <div class="s-row">
         <span class="s-emoji">${emoji}</span>
-        <span class="s-num" data-role="days">${past ? t('已过') : days}</span>
-        <span class="s-unit">${past ? '' : t('天')}</span>
+        <span class="s-num" data-role="days">${past ? t('已过') : units.num}</span>
+        ${past ? '' : `<span class="s-unit" data-role="unit">${t(units.unit)}</span>`}
       </div>`;
     return;
   }
@@ -312,24 +456,25 @@ function render() {
     box.innerHTML = `<div class="empty">${t('暂无倒计时事件（托盘图标 → 配置）')}</div>`;
     return;
   }
-  const { primary, days, hms, past, list, idx } = info;
+  const { primary, units, past, list, idx } = info;
   const emoji = ESC(primary.emoji || '⏰');
   const name = ESC(primary.name || '事件');
 
   if (state === 'expanded') {
-    // 放大版灵动岛：事件名 + 天数 + 时分秒（胶囊形）
+    // 放大版灵动岛：事件名 + 主时间单位（不足一天自动降级为时/分/秒）+ 更小单位
+    shownUnit = past ? '' : units.unit;
     box.innerHTML = `
       <div class="e-row">
         <span class="e-emoji">${emoji}</span>
         <span class="e-name">${t('距')} ${name}</span>
-        <span class="e-num" data-role="days">${past ? t('已过') : days}</span>
-        ${past ? '' : `<span class="e-unit">${t('天')}</span>`}
-        ${ui.showSeconds && !past ? `<span class="e-time" data-role="time">${hms.h}:${hms.m}:${hms.s}</span>` : ''}
+        <span class="e-num" data-role="days">${past ? t('已过') : units.num}</span>
+        ${past ? '' : `<span class="e-unit" data-role="unit">${t(units.unit)}</span>`}
+        ${ui.showSeconds && !past ? `<span class="e-time" data-role="time">${t(subText(units))}</span>` : ''}
       </div>`;
     return;
   }
 
-  // zoom 倒计时窗口（正方形 = 屏幕高 1/4；事件名在上方，中部突出天数，时分秒在下方）
+  // zoom 倒计时窗口（正方形 = 屏幕高 1/4；事件名在上方，中部突出主单位，副行更小单位）
   if (state === 'zoom') {
     const pillH = ($('#pill').offsetHeight || 300);
     const st = document.documentElement.style;
@@ -339,6 +484,7 @@ function render() {
     st.setProperty('--z-head', Math.round(pillH * 0.11) + 'px');
     st.setProperty('--z-emoji', Math.round(pillH * 0.15) + 'px');
   }
+  shownUnit = past ? '' : units.unit;
   box.innerHTML = `
     <div class="z-wrap">
       <div class="z-head">
@@ -347,13 +493,20 @@ function render() {
       </div>
       <div class="z-mid">
         <div class="z-row1">
-          <span class="z-num" data-role="days">${past ? t('已过') : days}</span>
-          ${past ? '' : `<span class="z-unit">${t('天')}</span>`}
+          <span class="z-num" data-role="days">${past ? t('已过') : units.num}</span>
+          ${past ? '' : `<span class="z-unit" data-role="unit">${t(units.unit)}</span>`}
         </div>
-        ${ui.showSeconds && !past ? `<div class="z-row2"><span class="z-time" data-role="time">${hms.h}${t('时')}${hms.m}${t('分')}${hms.s}${t('秒')}</span></div>` : ''}
+        ${ui.showSeconds && !past && units.sub.length ? `<div class="z-row2"><span class="z-time" data-role="time">${t(subText(units))}</span></div>` : ''}
       </div>
     </div>`;
   scheduleZoomMeasure();
+}
+
+/** 副行文本：天单位用「时:分:秒」钟表样式（保持原有观感），
+    主单位降级为时/分/秒时用「20分30秒」带单位样式（更明确） */
+function subText(units) {
+  if (units.unit === '天') return units.sub.map((x) => x.replace(/[时分秒]/g, '')).join(':');
+  return units.sub.join('');
 }
 
 /* ---------- 通知展示框自适应：按字体与字数测量，上报主进程调整窗口尺寸 ---------- */
@@ -465,15 +618,20 @@ function tickUpdate() {
     render(); // 轮播切到下一个事件 / 主事件变化：重建 DOM 更新标题
     return;
   }
-  const daysEl = $('[data-role="days"]');
-  if (daysEl) {
-    daysEl.firstChild.textContent = info.past ? t('已过') : info.days;
+  // 主单位可能随时间下降（天→时→分→秒，三种状态通用）：单位变化时重建 DOM
+  // （副行单位个数随主单位变化，纯文本更新不足以增删节点）
+  if (info.past) return;
+  if (info.units.unit !== shownUnit) {
+    render();
+    return;
   }
+  const numEl = $('[data-role="days"]');
+  if (numEl && numEl.firstChild) numEl.firstChild.textContent = info.units.num;
+  const unitEl = $('[data-role="unit"]');
+  if (unitEl) unitEl.textContent = t(info.units.unit);
   const timeEl = $('[data-role="time"]');
-  if (timeEl && !info.past && ui.showSeconds) {
-    timeEl.textContent = state === 'expanded'
-      ? `${info.hms.h}:${info.hms.m}:${info.hms.s}`
-      : `${info.hms.h}${t('时')}${info.hms.m}${t('分')}${info.hms.s}${t('秒')}`;
+  if (timeEl && ui.showSeconds && info.units.sub.length) {
+    timeEl.textContent = t(subText(info.units));
   }
 }
 

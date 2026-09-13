@@ -1,6 +1,7 @@
 /* ===== Smart Counter Island · 灵动岛 ===== */
 :root {
   --glass-gap: 60px; /* 毛玻璃层超出的采样余量 */
+  --glow-k: 1;     /* 玻璃高光强度系数（1 = 默认，0 = 无高光）；由渲染层按设置写入 */
   --ink: #ffffff;          /* 文字主色（由背景亮度自动切换） */
   --ink-soft: rgba(255, 255, 255, 0.72);
   --accent: #4f7cff;
@@ -22,8 +23,12 @@ html, body {
 /* ===== 文字颜色自适应（背景亮度 → 深/浅字） ===== */
 body[data-ink="dark"] { --ink: #10203c; --ink-soft: rgba(16, 32, 60, 0.68); }
 body[data-ink="light"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.75); }
-/* 无效果模式：黑底白字 */
-body[data-glass="off"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
+/* 黑底形态恒用白字：灵动岛（黑底样式）/ 通知弹窗 / 无效果模式。
+   这些形态的底色永远是黑色，若继续跟随背景亮度，亮背景下会变成深蓝字压在
+   黑色胶囊上，几乎看不见（灵动岛最常见的"显示不对"）。 */
+body[data-glass="off"],
+body[data-state="notify"],
+body[data-state="strip"][data-strip="black"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
 
 /* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） =====
    #glass 位于 #pill 内部。注意：filter（CSS blur 或液态 SVG 滤镜）会把
@@ -65,9 +70,26 @@ body[data-state="expanded"] #glass { clip-path: inset(calc(var(--glass-gap) + 8p
 body[data-state="zoom"]     #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 42px); }
 body[data-state="notify"]   #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 24px); }
 
-/* 窗口尺寸动画期间：隐藏真实玻璃层（含高光层），避免液态滤镜/合成层在
+/* GPU 液态玻璃（webgl）画布：与胶囊等大。
+   着色器可直接采样画面任意位置，不需要 CPU 路径那 60px 外扩采样余量；
+   形状由着色器的圆角 SDF 负责，因此也不需要 clip-path。
+   注意：canvas 是「替换元素」，必须显式写 width/height:100%，只写 inset 撑不开它。
+   显示/隐藏由渲染层按形态切换（JS 设置 display）。 */
+.glass-gl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  pointer-events: none;
+  /* 与 CPU 链路 .glass 保持同一套观感参数（饱和度/亮度微调） */
+  filter: saturate(1.25) brightness(1.06);
+}
+
+/* 窗口尺寸动画期间：隐藏真实玻璃层（含高光层与 GPU 画布），避免液态滤镜/合成层在
    缩放中逃逸圆角裁剪露出方形模糊边；pill 自身半透明渐变底撑住过渡 */
 body[data-anim="1"] #glass,
+body[data-anim="1"] #glass-gl,
 body[data-anim="1"] #glass-tint { display: none !important; }
 
 /* ===== 灵动岛本体 ===== */
@@ -128,14 +150,15 @@ body[data-glass="capture"] #pill {
       只有边缘一圈折射带 + 1px 锐利边线 + 两端弧线高光。
       因此背景设为透明、玻璃层不做额外降透明（否则中心画面会变淡，
       不再是"与原画面一模一样"）。 —— */
-body[data-glass="liquid"] #pill {
+body[data-glass="liquid"] #pill,
+body[data-glass="webgl"] #pill {
   background: transparent;
   box-shadow:
-    inset 0 1px 0 rgba(206, 209, 214, 0.62),
-    inset 0 -1px 0 rgba(196, 199, 205, 0.45),
-    inset 1px 0 0 rgba(196, 199, 205, 0.18),
-    inset -1px 0 0 rgba(196, 199, 205, 0.18),
-    inset 0 0 0 1px rgba(200, 203, 208, 0.08);
+    inset 0 1px 0 rgba(178, 182, 190, 0.55),
+    inset 0 -1px 0 rgba(146, 150, 158, 0.42),
+    inset 1px 0 0 rgba(152, 156, 164, 0.16),
+    inset -1px 0 0 rgba(152, 156, 164, 0.16),
+    inset 0 0 0 1px rgba(156, 160, 168, 0.07);
 }
 
 /* 高光层：液态玻璃的中心保持完全平整清晰，因此此层不铺中心白渐变，
@@ -150,11 +173,53 @@ body[data-glass="liquid"] #pill {
     inset 0 0 0 1px rgba(255, 255, 255, 0.4),
     inset 0 1px 1px rgba(255, 255, 255, 0.55);
 }
-/* 液态模式：两端弧线高光（3px 贴弧，不向内扩散）——浅灰调，避免纯白过亮 */
-body[data-glass="liquid"] .glass-tint {
+/* 液态模式：边线由 #pill 的内阴影提供（已调暗为浅灰），本层只负责
+   「玻璃表面」的光影 —— 让它看起来是一块有厚度的玻璃而不是一层贴纸：
+     ① 两端弧线高光（贴弧 3px）
+     ② 顶部高光带（顶光源在玻璃面上的反光）
+     ③ 左上对角弱反光（镜面斜向反射）
+     ④ 下部渐暗 + 底部内阴影（玻璃厚度感 / 玻璃投在背后的影子） */
+/* 液态模式：边线由 #pill 的内阴影提供（已调暗为浅灰），本层只负责
+   「玻璃表面」的光影 —— CPU 链路（SVG 滤镜）的观感已确认正常，数值保持不动：
+     ① 两端弧线高光（贴弧 3px）
+     ② 顶部高光带（顶光源在玻璃面上的反光）
+     ③ 左上对角弱反光（镜面斜向反射）
+     ④ 下部渐暗 + 底部内阴影（玻璃厚度感 / 玻璃投在背后的影子） */
+body[data-glass="liquid"] .glass-tint,
+body[data-glass="webgl"] .glass-tint {
+  box-shadow:
+    inset 0 0 0 1px rgba(156, 160, 168, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.26 * var(--glow-k, 1)));
   background:
-    linear-gradient(90deg, rgba(206, 209, 214, 0.24) 0px, transparent 3px),
-    linear-gradient(270deg, rgba(206, 209, 214, 0.24) 0px, transparent 3px);
+    linear-gradient(90deg, rgba(180, 184, 192, calc(0.20 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(270deg, rgba(180, 184, 192, calc(0.20 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.18 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 6%, rgba(255, 255, 255, 0) 18%),
+    linear-gradient(115deg, rgba(255, 255, 255, calc(0.12 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.03 * var(--glow-k, 1))) 20%, rgba(255, 255, 255, 0) 42%),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.20) 0px, rgba(6, 8, 14, 0.09) 6%, rgba(6, 8, 14, 0.02) 16%, rgba(6, 8, 14, 0) 36%);
+}
+
+/* —— 细条（灵动岛）使用「跟随玻璃效果」时：光影必须收窄到 px 级。
+   细条高度只有 26px 上下，百分比带（顶部 18%、底部 20%、对角反光）在这么矮的
+   元素上会糊满整条胶囊，看起来就是"一团雾"而不是玻璃边缘。 —— */
+body[data-state="strip"][data-strip="glass"] .glass-tint {
+  box-shadow:
+    inset 0 0 0 1px rgba(170, 174, 182, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.30 * var(--glow-k, 1)));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.20 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 2px, rgba(255, 255, 255, 0) 7px),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.24) 0px, rgba(6, 8, 14, 0.08) 2px, rgba(6, 8, 14, 0) 8px);
+}
+body[data-state="strip"][data-strip="glass"][data-glass="liquid"] .glass-tint,
+body[data-state="strip"][data-strip="glass"][data-glass="webgl"] .glass-tint {
+  background:
+    linear-gradient(90deg, rgba(180, 184, 192, calc(0.16 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(270deg, rgba(180, 184, 192, calc(0.16 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.20 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 2px, rgba(255, 255, 255, 0) 7px),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.24) 0px, rgba(6, 8, 14, 0.08) 2px, rgba(6, 8, 14, 0) 8px);
+}
+/* 细条玻璃样式下背景可能很亮也可能很暗 → 文字用双向描边保证任何背景都读得清 */
+body[data-state="strip"][data-strip="glass"] #content {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42), 0 0 6px rgba(255, 255, 255, 0.18);
 }
 
 /* —— 无效果（off）：纯黑底白字；仅当背景全黑时（data-bg=dark）加 1px 纯白边分隔（非发光） —— */
@@ -179,7 +244,7 @@ body[data-state="strip"][data-strip="black"] #pill {
 body[data-state="strip"][data-strip="black"][data-bg="dark"] #pill {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 0 0 1px rgba(198, 200, 206, 0.9); /* 浅灰描边（原纯白） */
+    0 0 0 1px rgba(168, 172, 180, 0.9); /* 浅灰描边（已由纯白 → 浅灰 → 再调暗） */
 }
 
 /* —— 系统通知：纯黑底白字弹窗；背景全黑时加 1px 纯白边 —— */
@@ -261,7 +326,9 @@ body[data-state="notify"] #dnd-bar { display: flex; }
 body[data-state="expanded"][data-glass="capture"] #content,
 body[data-state="zoom"][data-glass="capture"] #content,
 body[data-state="expanded"][data-glass="liquid"] #content,
-body[data-state="zoom"][data-glass="liquid"] #content {
+body[data-state="expanded"][data-glass="webgl"] #content,
+body[data-state="zoom"][data-glass="liquid"] #content,
+body[data-state="zoom"][data-glass="webgl"] #content {
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.6),
     0 0 1px rgba(0, 0, 0, 0.5),
@@ -270,7 +337,9 @@ body[data-state="zoom"][data-glass="liquid"] #content {
 body[data-state="expanded"][data-glass="capture"][data-ink="dark"] #content,
 body[data-state="zoom"][data-glass="capture"][data-ink="dark"] #content,
 body[data-state="expanded"][data-glass="liquid"][data-ink="dark"] #content,
-body[data-state="zoom"][data-glass="liquid"][data-ink="dark"] #content {
+body[data-state="expanded"][data-glass="webgl"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="liquid"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="webgl"][data-ink="dark"] #content {
   text-shadow:
     0 1px 2px rgba(255, 255, 255, 0.92),
     0 0 1px rgba(255, 255, 255, 0.85),
@@ -278,7 +347,9 @@ body[data-state="zoom"][data-glass="liquid"][data-ink="dark"] #content {
 }
 /* 数字/时间等大字同样描边，避免细笔画被背景吞掉 */
 body[data-glass="liquid"] .e-unit,
+body[data-glass="webgl"] .e-unit,
 body[data-glass="liquid"] .z-unit,
+body[data-glass="webgl"] .z-unit,
 body[data-glass="capture"] .e-unit,
 body[data-glass="capture"] .z-unit {
   text-shadow: inherit;
@@ -291,6 +362,11 @@ body[data-glass="capture"] .z-unit {
 .s-emoji { font-size: 13px; }
 .s-num { font-weight: 800; font-size: 14px; color: #ffffff; }
 .s-unit { color: rgba(255, 255, 255, 0.75); }
+/* 细条「跟随玻璃效果」时，底色变成背后的真实画面（可能很亮）→
+   文字必须像横幅那样跟随背景亮度自适应，否则亮壁纸下白字贴白墙看不清 */
+body[data-state="strip"][data-strip="glass"] .s-row,
+body[data-state="strip"][data-strip="glass"] .s-num { color: var(--ink); }
+body[data-state="strip"][data-strip="glass"] .s-unit { color: var(--ink-soft); }
 
 /* —— 放大版灵动岛 expanded（胶囊形） —— */
 .e-row {

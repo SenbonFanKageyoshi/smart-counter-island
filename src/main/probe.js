@@ -20,6 +20,10 @@ const EXCLUDE_FILE = () => path.join(os.tmpdir(), 'sci-exclude-cmd.txt');
 const EXCLUDE_RESULT_FILE = () => path.join(os.tmpdir(), 'sci-exclude-result.txt');
 /** 鼠标穿透命令文件（内容 "hwnd 0|1"，探针执行 WS_EX_TRANSPARENT 切换） */
 const PASSTHROUGH_FILE = () => path.join(os.tmpdir(), 'sci-transparent-cmd.txt');
+/** 桌面壁纸命令文件（内容 = 图片绝对路径，探针执行 SystemParametersInfo(SPI_SETDESKWALLPAPER)） */
+const WALLPAPER_FILE = () => path.join(os.tmpdir(), 'sci-wallpaper-cmd.txt');
+/** 壁纸设置回读结果文件（探针写回 "set=True path=..."） */
+const WALLPAPER_RESULT_FILE = () => path.join(os.tmpdir(), 'sci-wallpaper-result.txt');
 
 /**
  * 系统探针：常驻 PowerShell 子进程。
@@ -114,11 +118,13 @@ class Probe {
     }, 2000);
   }
 
-  /** 请求一次采样（节流由调用方控制） */
-  request() {
+  /** 请求一次采样（节流由调用方控制）
+      lite = true 时用轻量探测：跳过通知枚举（全屏隐藏期间不需要），
+      PowerShell 侧每次采样省掉一轮窗口枚举，CPU 占用显著下降。 */
+  request(lite) {
     if (!this.child || this.child.killed || this.pending) return;
     this.pending = true;
-    this.child.stdin.write('probe\n', () => {
+    this.child.stdin.write(lite ? 'probe-lite\n' : 'probe\n', () => {
       this.pending = false;
     });
   }
@@ -156,6 +162,34 @@ class Probe {
   /** 截屏排除命令是否已被探针消费（测试用） */
   excludeFileConsumed() {
     return !fs.existsSync(EXCLUDE_FILE());
+  }
+
+  /**
+   * 设置桌面壁纸（SPI_SETDESKWALLPAPER）：写入命令文件，探针子进程在下一次循环执行。
+   * 内容为图片绝对路径。返回是否成功写入命令文件。
+   */
+  setWallpaper(path) {
+    if (!this.child || this.child.killed) return false;
+    try {
+      fs.writeFileSync(WALLPAPER_FILE(), String(path || ''), 'utf8');
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 壁纸命令文件是否已被探针消费（测试用） */
+  wallpaperFileConsumed() {
+    return !fs.existsSync(WALLPAPER_FILE());
+  }
+
+  /** 读回壁纸设置结果：内容 "set=True path=..." */
+  readWallpaperResult() {
+    try {
+      return fs.readFileSync(WALLPAPER_RESULT_FILE(), 'utf8').trim();
+    } catch (e) {
+      return '';
+    }
   }
 
   /** 读回截屏排除结果：内容 "set=True aff=17" 表示设置成功且回读为已排除 */

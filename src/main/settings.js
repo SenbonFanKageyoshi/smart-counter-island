@@ -39,6 +39,42 @@ const DEFAULTS = {
   ui: {
     // 玻璃效果: 'auto'(真实截屏模糊,失败自动回退) | 'fake'(纯 CSS 模拟) | 'off'(关闭,黑底白字)
     glassMode: 'auto',
+    // 玻璃高光强度（百分比）：100 = 默认观感；0 = 完全无高光（只留折射与边线）；可上调到 200
+    glassGlow: 100,
+    // GPU 液态玻璃的刷新帧率（1–60）：只对「液态玻璃（GPU 加速）」生效；
+    // CPU 链路用 smart.bgRefreshSec（秒）控制刷新，两条链路互不影响
+    gpuGlassFps: 30,
+    // GPU 液态玻璃的观感微调（百分比，100 = 默认；只作用于「液态玻璃（GPU 加速）」着色器）
+    glEdgeGlow: 100,      // 边缘高光强度
+    glBottomShade: 100,   // 底部阴影强度
+    glRefract: 100,       // 边缘折射强度（最大位移量）
+    glBand: 100,          // 边缘折射范围（折射带宽）
+   // 壁纸功能：把用户提供的壁纸图片加一行励志语后设为桌面壁纸，可按频率自动轮换、可恢复原壁纸
+    wallpaper: {
+      enabled: false,
+      source: 'folder',     // 'folder'（使用指定文件夹里的图片，推荐）| 'gradient'（内置渐变底纹兜底）
+      folder: '',           // 图片文件夹（留空 = 用程序目录下的 wallpapers\source）
+      fit: 'cover',         // 图片填充方式：'cover' 铺满裁剪 | 'contain' 完整显示（留边）
+      dim: 0.32,            // 图片整体压暗（0–0.7，保证文字可读）
+      scrim: true,          // 励志语后面加一层柔和暗色底衬（图片再花也读得清）
+      quotes: '',           // 自定义励志语（一行一条，追加在内置语录之后）
+      useBuiltinQuotes: true,
+      school: '',           // 右下角落款（学校/班级）
+      subline: '',          // 左下角小字（如班级口号）
+      position: 'center',   // 'center' | 'bottom-left' | 'bottom-right' | 'top-center'
+      scale: 100,           // 文字缩放（40–250，%）
+      autoDaily: true,      // 自动轮换开关
+      intervalMin: 1440,    // 轮换频率（分钟）：1440 = 每天；0 = 每次启动换一次
+      order: 'seq',         // 轮换顺序：'seq' 按文件名顺序 | 'reverse' 倒序 | 'random' 随机
+      original: '',         // 启用前的原壁纸路径（用于「恢复原壁纸」）
+      lastDate: '',         // 最近一次轮换日期
+      lastRotateAt: 0,      // 最近一次轮换时刻（按分钟计频用）
+      lastFile: '',         // 最近一次生成的壁纸文件
+      lastQuote: '',        // 最近一次使用的励志语（配置页回显）
+      lastSource: '',       // 最近一次使用的图片文件名
+      lastIndex: -1,        // 最近一次使用的图片下标（轮换顺序用）
+      quoteIndex: 0,        // 语录计数器
+    },
     // 位置模式（兼容旧版配置；新配置按 positions 分状态设置）
     position: 'top-center',
     // 所在显示器: 'cursor' | 'primary' | 'index'
@@ -56,6 +92,8 @@ const DEFAULTS = {
     opacity: { strip: 0.6, expanded: 0.9, zoom: 0.96 },
     alwaysOnTop: true,
     showSeconds: true,
+    // 灵动岛日期估算方式：'ceil' 向上取整（不足一天算一天） | 'round' 四舍五入 | 'floor' 向下取整
+    dayRounding: 'floor',
     showPast: false,
     // 可选：文言文显示
     classical: false,

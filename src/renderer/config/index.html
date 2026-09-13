@@ -25,6 +25,7 @@
   <button class="tab" data-tab="smart">智能行为</button>
   <button class="tab" data-tab="schedule">时间表</button>
   <button class="tab" data-tab="tasks">定时任务</button>
+  <button class="tab" data-tab="wallpaper">壁纸</button>
   <button class="tab" data-tab="advanced">高级</button>
   <button class="tab" data-tab="about">关于</button>
 </nav>
@@ -45,10 +46,21 @@
       <select id="glassMode">
         <option value="auto">自动</option>
         <option value="capture">真实模糊</option>
-        <option value="liquid">液态玻璃</option>
+        <option value="liquid">液态玻璃（CPU·兼容）</option>
+        <option value="webgl">液态玻璃（GPU 加速·可调帧率）</option>
         <option value="fake">模拟玻璃</option>
         <option value="off">关闭</option>
       </select>
+    </div>
+
+    <div class="field">
+      <label>玻璃高光强度（%）</label>
+      <input type="number" id="glassGlow" min="0" max="200" step="5">
+    </div>
+
+    <div class="field">
+      <label>GPU 玻璃帧率（1–60）</label>
+      <input type="number" id="gpuGlassFps" min="1" max="60" step="1">
     </div>
 
     <div class="field">
@@ -58,7 +70,8 @@
       <label class="inline"><input type="checkbox" id="darkMode"> 暗色模式</label>
     </div>
     <div class="field">
-      <label class="inline"><input type="checkbox" id="autoStart"> 开机自启</label>
+      <label class="inline"><input type="checkbox" id="autoStart"> 开机自启 <span id="autoStartState" class="tag"></span></label>
+      <p class="small" id="autoStartPath"></p>
     </div>
 
     <h3 class="group-title">窗口位置（三种形态独立）</h3>
@@ -136,6 +149,14 @@
       <label class="inline"><input type="checkbox" id="showSeconds"> 显示 时:分:秒</label>
     </div>
     <div class="field">
+      <label>灵动岛日期估算方式</label>
+      <select id="dayRounding">
+        <option value="ceil">向上取整</option>
+        <option value="round">四舍五入</option>
+        <option value="floor">向下取整</option>
+      </select>
+    </div>
+    <div class="field">
       <label class="inline"><input type="checkbox" id="showPast"> 显示已过期事件</label>
     </div>
   </section>
@@ -156,7 +177,7 @@
       <label class="inline"><input type="checkbox" id="hideOnMaximized"> 窗口最大化时保持灵动岛</label>
     </div>
     <div class="field">
-      <label class="inline"><input type="checkbox" id="hideOnFullscreen"> 全屏时完全隐藏（退出全屏恢复）</label>
+      <label class="inline"><input type="checkbox" id="hideOnFullscreen"> 全屏时完全隐藏</label>
     </div>
     <div class="field">
       <label>闲置多少秒后展开横幅</label>
@@ -181,6 +202,7 @@
       <div class="radio-row">
         <label><input type="radio" name="manualMode" value="auto"> 自动</label>
         <label><input type="radio" name="manualMode" value="pinned"> 固定显示</label>
+        <label><input type="radio" name="manualMode" value="zoom"> 大窗口驻留</label>
         <label><input type="radio" name="manualMode" value="hidden"> 隐藏成灵动岛</label>
       </div>
     </div>
@@ -227,6 +249,108 @@
     <div id="task-list"></div>
   </section>
 
+  <!-- ============ 壁纸 ============ -->
+  <section id="tab-wallpaper" class="tabpage">
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wpEnabled"> 启用壁纸功能</label>
+    </div>
+    <div class="field">
+      <label>底图来源</label>
+      <select id="wpSource">
+        <option value="folder">我的图片文件夹</option>
+        <option value="gradient">内置渐变底纹</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>图片文件夹</label>
+      <div class="pos-row">
+        <input type="text" id="wpFolder" placeholder="例如 D:\壁纸" style="flex:1">
+        <button class="btn" id="wpOpen">打开文件夹</button>
+        <button class="btn" id="wpPick">浏览…</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>图片填充方式</label>
+      <select id="wpFit">
+        <option value="cover">铺满屏幕</option>
+        <option value="contain">完整显示</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>图片压暗（0–70）</label>
+      <input type="number" id="wpDim" min="0" max="70" step="2">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wpScrim"> 励志语后面加柔和底衬</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wpBuiltin"> 使用内置励志语</label>
+    </div>
+    <div class="field">
+      <label>自定义励志语（一行一条）</label>
+      <textarea id="wpQuotes" rows="4" placeholder="今天多流汗，明天少流泪"></textarea>
+    </div>
+    <div class="field">
+      <label>文字位置</label>
+      <select id="wpPosition">
+        <option value="center">居中</option>
+        <option value="bottom-left">左下</option>
+        <option value="bottom-right">右下</option>
+        <option value="top-center">顶部居中</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>文字大小（%）</label>
+      <input type="number" id="wpScale" min="40" max="250" step="5">
+    </div>
+    <div class="field">
+      <label>右下角落款</label>
+      <input type="text" id="wpSchool" placeholder="例如 ××中学 高三(1)班">
+    </div>
+    <div class="field">
+      <label>左下角小字</label>
+      <input type="text" id="wpSubline" placeholder="例如 今日事，今日毕">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wpDaily"> 自动轮换</label>
+    </div>
+    <div class="field">
+      <label>多长时间轮换一次</label>
+      <select id="wpInterval">
+        <option value="1440">每天一次</option>
+        <option value="720">每 12 小时</option>
+        <option value="360">每 6 小时</option>
+        <option value="120">每 2 小时</option>
+        <option value="60">每 1 小时</option>
+        <option value="30">每 30 分钟</option>
+        <option value="10">每 10 分钟</option>
+        <option value="5">每 5 分钟</option>
+        <option value="0">每次启动换一次</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>壁纸轮换顺序</label>
+      <select id="wpOrder">
+        <option value="seq">按文件名顺序</option>
+        <option value="reverse">按文件名倒序</option>
+        <option value="random">随机</option>
+      </select>
+    </div>
+    <div class="field">
+      <div class="pos-row">
+        <button class="btn primary" id="wpNow">立即更换</button>
+        <button class="btn" id="wpPreview">预览</button>
+        <button class="btn" id="wpRestore">恢复原壁纸</button>
+      </div>
+    </div>
+    <div class="field">
+      <p class="small" id="wpStatus"></p>
+    </div>
+    <div class="field">
+      <img id="wpPreviewImg" alt="" style="max-width:100%;border-radius:8px;display:none">
+    </div>
+  </section>
+
   <!-- ============ 高级 ============ -->
   <section id="tab-advanced" class="tabpage">
     <div class="field">
@@ -244,10 +368,27 @@
       <input type="number" id="bgRefreshSec" min="0.5" max="10" step="0.1">
     </div>
     <div class="field">
-      <label>悬停不展开范围（像素）</label>
+      <label>悬停不展开范围（px）</label>
       <input type="number" id="hoverMargin" min="6" max="120" step="2">
     </div>
-  </section>
+    <h3 class="sec-title">GPU 液态玻璃观感</h3>
+    <div class="field">
+      <label>边缘高光强度（%）</label>
+      <input type="number" id="glEdgeGlow" min="0" max="300" step="5">
+    </div>
+    <div class="field">
+      <label>底部阴影强度（%）</label>
+      <input type="number" id="glBottomShade" min="0" max="300" step="5">
+    </div>
+    <div class="field">
+      <label>边缘折射强度（%）</label>
+      <input type="number" id="glRefract" min="0" max="300" step="5">
+    </div>
+    <div class="field">
+      <label>边缘折射范围（%）</label>
+      <input type="number" id="glBand" min="0" max="300" step="5">
+    </div>
+ </section>
 
   <!-- ============ 关于 ============ -->
   <section id="tab-about" class="tabpage">
