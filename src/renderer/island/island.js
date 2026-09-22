@@ -8,10 +8,66 @@ const $ = (s) => document.querySelector(s);
 let state = 'strip';
 let events = [];
 let notify = null; // { title, body }
+let weather = null; // 主进程下发的天气载荷（null = 未启用 / 无数据）：横幅/大卡片的天气 chip 与图标动画
+let wxFxKind = '';  // 本次通知的天气特效类型（'' = 无特效）
 let ui = { showSeconds: true, showPast: false, dayRounding: 'floor', cycleEnabled: false, cycleSec: 6, classical: false, stripStyle: 'black', notifyShake: true };
 
 const ESC = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ---------- 圆角半径（两条玻璃链路的共用取值） ---------- */
+
+/**
+ * #pill 的 border-radius 带 0.24s 过渡（expanded 是胶囊 = 999px，zoom 只有 42px）。
+ * 过渡期间 getComputedStyle 读到的是中间值（例如 400px），再被「不超过半高半宽」一夹，
+ * 圆角矩形 SDF 就退化成圆/胶囊 —— 大窗口刚展开时边缘折射看起来是圆的，就是这个原因。
+ * 所以：过渡进行中改用「本状态上一次稳定后的半径」，还没有稳定值时用与 CSS 同步的兜底表。
+ */
+window.SCIRadius = (() => {
+  const FALLBACK = { strip: 13, zoom: 42, notify: 24, expanded: null }; // null = 胶囊（= 半高）
+  const cache = {};
+
+  function transitioning(pill) {
+    try {
+      if (typeof pill.getAnimations !== 'function') return false;
+      // Chromium 把 border-radius 过渡记成四个圆角长属性（border-top-left-radius …），
+      // 不是 "border-radius"，这里按包含 radius 判断
+      return pill.getAnimations().some((a) => a && typeof a.transitionProperty === 'string' && a.transitionProperty.indexOf('radius') >= 0);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** pill 当前应使用的 CSS 半径（已按「不超过半高半宽」夹过） */
+  function settled(pill, maxR) {
+    const st = document.body.dataset.state || 'strip';
+    const raw = parseFloat(getComputedStyle(pill).borderRadius);
+    const val = isFinite(raw) ? Math.min(raw, maxR) : 0;
+    if (!transitioning(pill)) {
+      cache[st] = val;
+      return val;
+    }
+    if (typeof cache[st] === 'number') return Math.min(cache[st], maxR);
+    const fb = FALLBACK[st];
+    return fb == null ? maxR : Math.min(fb, maxR);
+  }
+
+  return { settled };
+})();
+
+/** 圆角过渡结束后用稳定值重算一次（两条链路都要） */
+(function watchRadiusTransition() {
+  const pill = document.getElementById('pill');
+  if (!pill) return;
+  const onDone = (e) => {
+    // 过渡结束时事件名是四个圆角长属性（border-top-left-radius 等）
+    if (!e || typeof e.propertyName !== 'string' || e.propertyName.indexOf('radius') < 0) return;
+    scheduleLiquidGlass();
+    if (window.GlassWebGL && window.GlassWebGL.isActive()) window.GlassWebGL.redraw();
+  };
+  pill.addEventListener('transitionend', onDone);
+  pill.addEventListener('transitioncancel', onDone);
+})();
 
 /* ---------- 文言文（可选） ---------- */
 
@@ -33,24 +89,40 @@ function t(s) {
 
 /** GPU 玻璃：把主进程下发的窗口/显示器几何交给 WebGL 模块（含胶囊在窗口内的偏移） */
 function applyGeom(g) {
-  if (!g || !window.GlassWebGL) return;
+  if (!g) return;
+  lastGeom = g; // 挖孔形状要在窗口移动/缩放后用最新几何重算
+  if (!window.GlassWebGL) return;
   const pr = $('#pill').getBoundingClientRect();
   window.GlassWebGL.setGeom(Object.assign({}, g, { padX: pr.left, padY: pr.top }));
 }
 
 window.island.onState((s) => {
   state = s.state;
+  weather = s.weather || null; // 天气载荷（chip 与图标动画；细条不渲染 chip，保持 116 宽几何）
+  // 先记下禁区规格：render() 里的内容布局要用它（applyCameraNotch 里再算黑底与禁区矩形）
+  notchData = s.notch && s.notch.zw > 0 ? s.notch : null;
   document.body.dataset.state = state;
   $('#pill').style.opacity = s.opacity;
   // GPU 玻璃需要窗口/显示器几何（画布像素 ↔ 屏幕物理像素的映射）
   applyGeom(s.geom);
   updateGlassVisibility();
+  applyCornerClip(); // 角落卡片的形状要按新尺寸重算
+  applyCameraNotch(s.notch); // 传感器避让：算出黑底与内容布局，render() 依赖它
   render();
+  guardNotchContent(); // 布局兜底：内容绝不允许压进禁区
+  if (state !== 'notify') setWxEffect(''); // 离开通知形态：撤掉整条岛的天气特效
 });
 
 // 窗口移动/缩放时主进程增量推送几何 → 立即按新位置重绘（不需要等下一次视频帧）
 window.island.onGeom((g) => {
   applyGeom(g);
+  // 禁区是屏幕上的固定位置（传感器不动）：窗口动过之后黑底与内容布局都要用新几何重算
+  if (notchData) {
+    const before = notchVisible;
+    applyCameraNotch(notchData);
+    if (before !== notchVisible) render();
+    guardNotchContent();
+  }
   if (document.body.dataset.glass === 'webgl' && window.GlassWebGL && window.GlassWebGL.isActive()) {
     window.GlassWebGL.redraw();
   }
@@ -95,7 +167,9 @@ window.island.onNotify((d) => {
     btn: d.btn || null,
     alert: !!d.alert, // 提醒类：文字高频模糊抖动
   };
+  wxFxKind = d.weather || ''; // 天气提醒：整条岛的雨雪/晴空特效
   render();
+  setWxEffect(wxFxKind);
 });
 
 /** 正文关键词红色高亮（如"关机"），仅对已转义文本中的纯关键词生效 */
@@ -219,7 +293,7 @@ window.island.onAnim((d) => {
     通知形态是黑底白字弹窗，从不显示玻璃。 */
 function glassShown() {
   const m = document.body.dataset.glass;
-  if (m !== 'capture' && m !== 'liquid' && m !== 'webgl') return false;
+  if (m !== 'capture' && m !== 'liquid' && m !== 'liquid-ab' && m !== 'webgl') return false;
   if (state === 'expanded' || state === 'zoom') return true;
   if (state === 'strip') return document.body.dataset.strip === 'glass';
   return false;
@@ -253,17 +327,21 @@ let glassFilterTimer = null;
 function rebuildLiquidGlass() {
   const g = document.getElementById('glass');
   if (!g || !window.LiquidGlass) return;
-  if (document.body.dataset.glass !== 'liquid') {
+  const gm = document.body.dataset.glass;
+  if (gm !== 'liquid' && gm !== 'liquid-ab') {
     g.style.filter = '';
     return;
   }
+  // 「液态玻璃·色散版」= CPU 链路 + 固定 2px 色散（不跟随「边缘色散」设置项，保证开箱即用的观感一致）
+  const abFixed = gm === 'liquid-ab' ? 2 : null;
   const p = document.getElementById('pill');
   if (!p) return;
   const gr = g.getBoundingClientRect();
   const pr = p.getBoundingClientRect();
   if (gr.width < 4 || gr.height < 4) return;
   const cs = getComputedStyle(p);
-  const radius = Math.min(parseFloat(cs.borderRadius) || 0, Math.min(pr.width, pr.height) / 2);
+  const maxR = Math.min(pr.width, pr.height) / 2;
+  const radius = window.SCIRadius ? window.SCIRadius.settled(p, maxR) : Math.min(parseFloat(cs.borderRadius) || 0, maxR);
   const rect = {
     x: pr.left - gr.left,
     y: pr.top - gr.top,
@@ -271,7 +349,15 @@ function rebuildLiquidGlass() {
     h: pr.height,
     r: Math.max(1, radius),
   };
-  const ok = window.LiquidGlass.apply(window.LiquidGlass.FILTER_ID, rect, { glowK: glowFactor() });
+  const ok = window.LiquidGlass.apply(window.LiquidGlass.FILTER_ID, rect, {
+    glowK: glowFactor(),
+    // 参数化观感（0/缺省 = 按玻璃高度自适应，行为与旧版一致）：
+    // 这几个值可以在「玻璃实验室」窗口里实时调，满意后一键写回设置
+    refractWidth: typeof ui.refractWidth === 'number' ? ui.refractWidth : 0,
+    maxRefract: typeof ui.maxRefract === 'number' ? ui.maxRefract : 0,
+    bleedOpacity: typeof ui.bleedOpacity === 'number' ? Math.max(0, Math.min(1, ui.bleedOpacity / 100)) : undefined,
+    aberration: abFixed != null ? abFixed : typeof ui.glassAberration === 'number' ? ui.glassAberration : 0,
+  });
   // 失败（环境不支持等）：清掉内联滤镜，回退 CSS 兜底
   if (!ok) g.style.filter = '';
 }
@@ -287,13 +373,227 @@ function pctK(v) {
   return typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(3, v / 100)) : 1;
 }
 
+/* ---------- 传感器避让（灵动岛 · 传感器避让规格） ---------- */
+
+let notchData = null; // 主进程下发的禁区规格（含屏幕坐标 sx/sy）
+let notchVisible = false; // 禁区是否真的落在小岛上（内容让位 / 黑底包住都看它）
+let notchLayout = 'none'; // 当前状态用哪种内容布局：'split' | 'below' | 'none'
+let lastGeom = null; // 最近一次窗口/显示器几何（窗口动过之后重算禁区用）
+
+/**
+ * 挖孔在 pill 局部坐标系里的位置与可见性。
+ * 窗口会随状态移动/缩放，所以每次都用「屏幕坐标 - 当前窗口坐标 - pill 偏移」重算，
+ * 不能沿用主进程下发时的窗口相对坐标（那是上一帧的窗口位置）。
+ */
+function notchLocal() {
+  const n = notchData;
+  const p = $('#pill');
+  if (!n || !p) return null;
+  const pr = p.getBoundingClientRect();
+  const w = lastGeom && lastGeom.win ? lastGeom.win : { x: 0, y: 0 };
+  const winX = typeof n.sx === 'number' ? n.sx - w.x : n.zx;
+  const winY = typeof n.sy === 'number' ? n.sy - w.y : n.zy;
+  const zw = Math.max(1, n.zw || 1);
+  const zh = Math.max(1, n.zh || 1);
+  const zx = winX - pr.left;
+  const zy = winY - pr.top;
+  const visible = zx + zw > 0 && zx < pr.width && zy + zh > 0 && zy < pr.height;
+  return {
+    zx,
+    zy,
+    zw,
+    zh,
+    cx: zx + zw / 2,
+    cy: zy + zh / 2,
+    layout: n.layout === 'split' || n.layout === 'below' ? n.layout : 'none',
+    debug: !!n.debug,
+    islandTop: Number(n.islandTop) || 0,
+    slotLeft: Math.max(0, Number(n.slotLeft) || 0),
+    slotRight: Math.max(0, Number(n.slotRight) || 0),
+    slotBelow: Math.max(0, Number(n.slotBelow) || 0),
+    belowTop: Math.max(0, Number(n.belowTop) || 0),
+    sensors: (n.sensors || []).map((s) => ({
+      id: s.id,
+      x: (typeof s.sx === 'number' ? s.sx - w.x : 0) - pr.left,
+      y: (typeof s.sy === 'number' ? s.sy - w.y : 0) - pr.top,
+      d: Math.max(2, Number(s.d) || 0),
+    })),
+    visible,
+    pillW: Math.max(1, pr.width),
+    pillH: Math.max(1, pr.height),
+  };
+}
+
+
+/**
+ * 传感器避让（规格硬约束：传感器坐标永不改变；黑色背景可以覆盖传感器，内容不行）。
+ * 禁区一律画成不透明黑的圆角矩形，盖在玻璃与内容之上 —— 内容算错位也绝不会盖住传感器；
+ * 内容布局只有两种（规格 layout_rules）：split 左右分栏 / below 退到禁区下方。
+ * 小岛窗口位置不受影响：镜头在哪由传感器坐标决定，黑底只负责把它包住。
+ */
+function applyCameraNotch(notch) {
+  notchData = notch && notch.zw > 0 ? notch : null;
+  const p = $('#pill');
+  if (!p) return;
+  const loc = notchLocal();
+  const on = !!loc && loc.visible;
+  notchVisible = on;
+  notchLayout = on ? loc.layout : 'none';
+  const st = document.documentElement.style;
+  const zeros = ['--notch-gap', '--notch-half', '--notch-pad-t', '--notch-pad-b', '--notch-pad-l', '--notch-pad-r', '--notch-shift', '--notch-sink', '--notch-slot-l', '--notch-slot-r'];
+  if (!on) {
+    for (const k of zeros) st.setProperty(k, '0px');
+    st.setProperty('--notch-cx', '50%');
+    p.style.maskImage = '';
+    p.style.webkitMaskImage = '';
+    if (state !== 'corner') p.style.clipPath = '';
+    delete p.dataset.notch;
+    delete document.body.dataset.notch;
+    delete document.body.dataset.notchLayout;
+    renderSensorDebug(null);
+    return;
+  }
+  document.body.dataset.notch = '1';
+  document.body.dataset.notchLayout = loc.layout;
+  // 禁区尺寸与位置（px）：黑底、内容让位、进度条文字都以它为准
+  st.setProperty('--notch-zone-w', Math.round(loc.zw) + 'px');
+  st.setProperty('--notch-zone-h', Math.round(loc.zh) + 'px');
+  st.setProperty('--notch-gap', Math.round(loc.zw) + 'px');
+  st.setProperty('--notch-half', Math.round(loc.zw / 2) + 'px');
+  st.setProperty('--notch-cx', Math.round(loc.cx) + 'px');
+  st.setProperty('--notch-cy', Math.round(loc.cy) + 'px');
+  st.setProperty('--notch-shift', Math.round(loc.cx - loc.pillW / 2) + 'px');
+  st.setProperty('--notch-slot-l', loc.slotLeft + 'px');
+  st.setProperty('--notch-slot-r', loc.slotRight + 'px');
+  // below 布局：内容 top ≥ 禁区底边 + 额外空隙（规格 below.top）
+  const belowPad = Math.max(0, Math.ceil(loc.zy + loc.zh + loc.slotBelow));
+  st.setProperty('--notch-pad-t', (loc.layout === 'below' ? belowPad : 0) + 'px');
+  st.setProperty('--notch-pad-b', '0px');
+  st.setProperty('--notch-pad-l', '0px');
+  st.setProperty('--notch-pad-r', '0px');
+  // 大卡片内容被往下推时，整窗高度要多留出这么多（渲染层测完尺寸回传主进程）
+  st.setProperty('--notch-sink', loc.layout === 'below' ? belowPad + 'px' : '0px');
+  // 那块黑交给独立的「传感器盖板」窗口（纯黑胶囊、永久置顶、永不移动），
+  // 小岛这边只负责把内容让开禁区（下面的 --notch-* 变量）。
+  renderSensorDebug(loc);
+  p.style.maskImage = '';
+  p.style.webkitMaskImage = '';
+  if (state !== 'corner') p.style.clipPath = '';
+  p.dataset.notch = `${Math.round(loc.zx)},${Math.round(loc.zy)} ${Math.round(loc.zw)}x${Math.round(loc.zh)}`;
+}
+
+/** 调试模式：画传感器彩色圆点 + 禁区虚线框（规格 interaction.toggle_sensor） */
+function renderSensorDebug(loc) {
+  const box = $('#sensor-debug');
+  if (!box) return;
+  if (!loc || !loc.debug) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const palette = ['#ff5f57', '#febc2e', '#28c840', '#4f7cff', '#c061ff'];
+  box.style.display = 'block';
+  box.innerHTML =
+    `<span class="sd-zone" style="left:${Math.round(loc.zx)}px;top:${Math.round(loc.zy)}px;width:${Math.round(loc.zw)}px;height:${Math.round(loc.zh)}px"></span>` +
+    loc.sensors
+      .map((s, i) => {
+        const d = Math.max(4, Math.round(s.d));
+        return `<span class="sd-dot" style="left:${Math.round(s.x - d / 2)}px;top:${Math.round(s.y - d / 2)}px;width:${d}px;height:${d}px;background:${palette[i % palette.length]}"></span>`;
+      })
+      .join('');
+}
+
+/**
+ * 内容让位（规格 layout_rules）：
+ *   split → 内容放传感器左右两侧（左槽 anchor left + offset，右槽 anchor right + offset），
+ *           中间 [zoneLeft, zoneRight] 不放任何内容
+ *   below → 内容从禁区底边下方开始（不分栏，靠 --notch-pad-t 推下来）
+ * 未启用 / 禁区不在小岛上：原样返回（单行居中）。
+ */
+function notchRow(left, right) {
+  if (!notchVisible || notchLayout !== 'split') return left + right;
+  return `<span class="nb-l">${left}</span><span class="nb-gap"></span><span class="nb-r">${right}</span>`;
+}
+
+/**
+ * 布局兜底（硬约束：内容 rect 与禁区不相交）：
+ * split 布局下内容紧挨禁区两侧，正常不会压进去；万一字号/内容异常导致压入，
+ * 就按禁区边界把对应那一瓣夹住（宁可裁一点，也不许盖住传感器）。
+ */
+function guardNotchContent() {
+  const loc = notchLocal();
+  const p = $('#pill');
+  if (!loc || !loc.visible || notchLayout !== 'split' || !p) return;
+  const pr = p.getBoundingClientRect();
+  const zx = loc.zx;
+  const zr = loc.zx + loc.zw;
+  document.querySelectorAll('.nb-l').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    const left = r.left - pr.left;
+    if (r.right - pr.left > zx - loc.slotLeft && left < zx) {
+      el.style.maxWidth = Math.max(0, Math.floor(zx - loc.slotLeft - left)) + 'px';
+      el.style.overflow = 'hidden';
+    }
+  });
+  document.querySelectorAll('.nb-r').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.left - pr.left < zr + loc.slotRight) {
+      el.style.maxWidth = Math.max(0, Math.floor(pr.width - zr - loc.slotRight)) + 'px';
+      el.style.overflow = 'hidden';
+    }
+  });
+}
+
+/** 自检/诊断钩子：禁区在屏幕上的位置与布局（主进程 --test 用） */
+window.__notchState = () => {
+  const loc = notchLocal();
+  const p = $('#pill');
+  const pr = p ? p.getBoundingClientRect() : null;
+  const w = lastGeom && lastGeom.win ? lastGeom.win : { x: 0, y: 0 };
+  return {
+    visible: notchVisible,
+    layout: notchLayout,
+    zone: loc ? { w: Math.round(loc.zw), h: Math.round(loc.zh) } : null,
+    rect: loc ? { x: Math.round(loc.zx), y: Math.round(loc.zy), w: Math.round(loc.zw), h: Math.round(loc.zh) } : null,
+    screen: loc && pr ? { x: w.x + pr.left + loc.zx, y: w.y + pr.top + loc.zy } : null,
+    sensors: loc ? loc.sensors.map((s) => ({ id: s.id, x: s.x, y: s.y, d: s.d })) : [],
+    band: loc ? { left: loc.zx, right: loc.zx + loc.zw } : null,
+  };
+};
+
+/** 自检/诊断钩子：渲染层看到的天气载荷与 chip 状态（主进程 --shot-weather / --test 用） */
+window.__wxState = () => {
+  const w = document.getElementById('wx');
+  const fx = document.getElementById('wx-fx');
+  const vis = (el) => (el ? el.hidden || getComputedStyle(el).display === 'none' : null);
+  return {
+    state,
+    payload: weather,
+    hasChip: !!w,
+    chipHidden: vis(w),
+    chipAnim: w ? w.dataset.anim || '' : '',
+    chipText: w ? (w.querySelector('.wx-text') || {}).textContent || '' : '',
+    chipTemp: w ? (w.querySelector('.wx-temp') || {}).textContent || '' : '',
+    fx: fx ? fx.dataset.fx || '' : '',
+    fxHidden: vis(fx),
+    fxKids: fx ? fx.children.length : 0,
+  };
+};
+
 /** 状态/尺寸变化后延迟重建（窗口缩放动画中多次触发，合并为一次） */
 function scheduleLiquidGlass() {
   clearTimeout(glassFilterTimer);
   glassFilterTimer = setTimeout(rebuildLiquidGlass, 80);
 }
 
-window.addEventListener('resize', scheduleLiquidGlass);
+window.addEventListener('resize', () => {
+  scheduleLiquidGlass();
+  applyCornerClip(); // 角落卡片形状随尺寸重算
+  if (notchData) {
+    applyCameraNotch(notchData); // 禁区形状随尺寸重算
+    guardNotchContent();
+  }
+});
 
 let bgDark = false; // 白边状态（滞回记忆，防闪烁）
 let inkDark = false; // 深色文字状态（滞回记忆：亮暗背景在阈值附近波动时不反复闪字）
@@ -399,6 +699,7 @@ function currentInfo() {
   const hms = fmtHMS(ms);
   return {
     primary,
+    ms,
     days: roundDays(ms, ui.dayRounding),
     hms,
     units: timeUnits(ms, ui.dayRounding),
@@ -406,6 +707,60 @@ function currentInfo() {
     list,
     idx,
   };
+}
+
+/* ---------- 天气 chip 与整岛天气特效 ---------- */
+
+/**
+ * 天气 chip（横幅 / 大卡片内联显示）。
+ * 细条不渲染：细条宽度是 116 + 禁区宽 + 槽位（T29 几何契约），加东西会破契约。
+ * 动画关闭或强度 0 时只出静态图标（图标形状由 data-anim 决定，CSS keyframes 负责动）。
+ */
+function wxChipHtml() {
+  if (!weather || weather.show === false) return '';
+  // 常驻（always）= 细条也显示；'banner' 只在横幅/大卡片显示（细条保持极简）
+  if (weather.mode !== 'always' && state !== 'expanded' && state !== 'zoom') return '';
+  const iv = Math.max(0, Math.min(200, Number(weather.intensity) || 0)) / 100;
+  // 动画关闭或强度 0 → 静态图标（data-anim=none 时不挂 keyframes，省电也便于断言）
+  const anim = weather.animEnabled === false || iv === 0 ? 'none' : weather.anim || 'none';
+  const unit = weather.unit === 'f' ? '°F' : '°';
+  const temp = weather.temp == null ? '--' : `${Math.round(weather.temp)}${unit}`;
+  const tip = `${weather.city || ''} ${weather.text || ''}${weather.stale ? '（数据已过期）' : ''}`.trim();
+  // 细条空间紧：只出图标 + 温度（紧凑态），文字留给横幅/大卡片
+  const compact = state === 'strip';
+  // 细条上天气的位置：'cover' = 交给盖板窗口画，这里不出；'left' 贴左缘；默认贴右缘
+  const pos = weather.pos || 'right';
+  if (compact && pos === 'cover') return '';
+  const side = compact && pos === 'left' ? ' data-side="left"' : '';
+  return (
+    `<span class="wx${weather.stale ? ' wx-stale' : ''}" id="wx" data-anim="${ESC(anim)}" data-tone="${ESC(weather.tone || 'cool')}"${compact ? ' data-compact="1"' : ''}${side}` +
+    ` style="--wx-i:${iv.toFixed(2)}" title="${ESC(tip)}">` +
+    '<span class="wx-sky">' +
+    '<i class="wx-sun"></i><i class="wx-cloud"></i><i class="wx-cloud b"></i>' +
+    '<i class="wx-drop d1"></i><i class="wx-drop d2"></i><i class="wx-drop d3"></i>' +
+    '<i class="wx-flake f1"></i><i class="wx-flake f2"></i>' +
+    '<i class="wx-bolt"></i><i class="wx-fog g1"></i><i class="wx-fog g2"></i>' +
+    '</span>' +
+    `<b class="wx-temp">${ESC(temp)}</b><em class="wx-text">${ESC(weather.text || '')}</em>` +
+    '</span>'
+  );
+}
+
+/** 通知形态的整条岛天气特效：雨丝 / 雪花 / 晴空 / 云影 / 雷闪 / 雾带（层数按动画强度缩放） */
+function setWxEffect(kind) {
+  const fx = $('#wx-fx');
+  if (!fx) return;
+  const on = !!kind && kind !== 'none' && (!weather || weather.animEnabled !== false);
+  fx.hidden = !on;
+  fx.dataset.fx = on ? kind : '';
+  if (!on) {
+    fx.innerHTML = '';
+    return;
+  }
+  const iv = Math.max(0, Math.min(200, Number(weather && weather.intensity) || 0)) / 100;
+  const base = kind === 'snow' ? 10 : kind === 'rain' || kind === 'thunder' ? 12 : 6;
+  const n = Math.round(base * iv);
+  fx.innerHTML = Array.from({ length: n }, (_x, i) => `<i style="--i:${i}"></i>`).join('');
 }
 
 let shownPrimaryId = null; // 当前 DOM 展示的事件 id（轮播切换检测用）
@@ -443,34 +798,64 @@ function render() {
     const { primary, units, past } = info;
     const emoji = ESC(primary.emoji || '⏰');
     shownUnit = past ? '' : units.unit;
-    box.innerHTML = `
-      <div class="s-row">
-        <span class="s-emoji">${emoji}</span>
-        <span class="s-num" data-role="days">${past ? t('已过') : units.num}</span>
-        ${past ? '' : `<span class="s-unit" data-role="unit">${t(units.unit)}</span>`}
-      </div>`;
+    // 挖孔避让：图标一瓣、数字+单位一瓣，中间让出挖孔
+    const sLeft = `<span class="s-emoji">${emoji}</span>`;
+    const sRight = `<span class="s-num" data-role="days">${past ? t('已过') : units.num}</span>${past ? '' : `<span class="s-unit" data-role="unit">${t(units.unit)}</span>`}`;
+    // 天气常驻：紧凑 chip 挂在细条右缘（绝对定位，不参与整行居中 → 两瓣与禁区的相对位置不变）
+    box.innerHTML = `<div class="s-row">${notchRow(sLeft, sRight)}</div>${wxChipHtml()}`;
     return;
   }
 
   if (!info) {
-    box.innerHTML = `<div class="empty">${t('暂无倒计时事件（托盘图标 → 配置）')}</div>`;
+    // 没有倒计时事件也照常显示天气（教室只想要天气时不该被空态吞掉）
+    const chip = wxChipHtml();
+    box.innerHTML = chip
+      ? `<div class="empty-wrap"><div class="empty">${t('暂无倒计时事件（托盘图标 → 配置）')}</div>${chip}</div>`
+      : `<div class="empty">${t('暂无倒计时事件（托盘图标 → 配置）')}</div>`;
     return;
   }
   const { primary, units, past, list, idx } = info;
   const emoji = ESC(primary.emoji || '⏰');
   const name = ESC(primary.name || '事件');
 
+  // 全屏授课：屏幕顶部倒计时进度条（贴顶整宽，填充比例 = 已过 / 总量）
+  if (state === 'progress') {
+    const pct = progressPercent(info);
+    box.innerHTML = `
+      <div class="pb-wrap">
+        <div class="pb-fill" data-role="fill" style="width:${pct}%"></div>
+        <div class="pb-label">
+          <span class="pb-name">${emoji} ${t('距')} ${name}</span>
+          <span class="pb-num" data-role="days">${past ? t('已过') : units.num}${past ? '' : t(units.unit)}</span>
+          ${ui.showSeconds && !past ? `<span class="pb-time" data-role="time">${t(subText(units))}</span>` : ''}
+        </div>
+      </div>`;
+    shownUnit = past ? '' : units.unit;
+    return;
+  }
+
+  // 全屏授课：右上角角落卡片（贴住屏幕右上角，只显示倒计时剩余时间）
+  if (state === 'corner') {
+    shownUnit = past ? '' : units.unit;
+    box.innerHTML = `
+      <div class="cz-wrap">
+        <div class="cz-mid">
+          <span class="cz-num" data-role="days">${past ? t('已过') : units.num}</span>
+          ${past ? '' : `<span class="cz-unit" data-role="unit">${t(units.unit)}</span>`}
+        </div>
+        ${ui.showSeconds && !past ? `<div class="cz-time" data-role="time">${t(subText(units))}</div>` : ''}
+      </div>`;
+    applyCornerClip();
+    return;
+  }
+
   if (state === 'expanded') {
     // 放大版灵动岛：事件名 + 主时间单位（不足一天自动降级为时/分/秒）+ 更小单位
     shownUnit = past ? '' : units.unit;
-    box.innerHTML = `
-      <div class="e-row">
-        <span class="e-emoji">${emoji}</span>
-        <span class="e-name">${t('距')} ${name}</span>
-        <span class="e-num" data-role="days">${past ? t('已过') : units.num}</span>
-        ${past ? '' : `<span class="e-unit" data-role="unit">${t(units.unit)}</span>`}
-        ${ui.showSeconds && !past ? `<span class="e-time" data-role="time">${t(subText(units))}</span>` : ''}
-      </div>`;
+    // 挖孔避让：图标+事件名一瓣，数字/单位/时间一瓣
+    const eLeft = `<span class="e-emoji">${emoji}</span><span class="e-name">${t('距')} ${name}</span>`;
+    const eRight = `<span class="e-num" data-role="days">${past ? t('已过') : units.num}</span>${past ? '' : `<span class="e-unit" data-role="unit">${t(units.unit)}</span>`}${ui.showSeconds && !past ? `<span class="e-time" data-role="time">${t(subText(units))}</span>` : ''}${wxChipHtml()}`;
+    box.innerHTML = `<div class="e-row">${notchRow(eLeft, eRight)}</div>`;
     return;
   }
 
@@ -489,7 +874,7 @@ function render() {
     <div class="z-wrap">
       <div class="z-head">
         <span class="z-emoji">${emoji}</span>
-        <span class="z-label">${t('距离')}${name}${t('还有')}</span>
+        <span class="z-label">${t('距离')}${name}${t('还有')}</span>${wxChipHtml()}
       </div>
       <div class="z-mid">
         <div class="z-row1">
@@ -507,6 +892,53 @@ function render() {
 function subText(units) {
   if (units.unit === '天') return units.sub.map((x) => x.replace(/[时分秒]/g, '')).join(':');
   return units.sub.join('');
+}
+
+/** 顶部进度条填充比例（%）：已过 / 总量；总量 = 设置里的天数（默认 365） */
+function progressPercent(info) {
+  const total = Math.max(1, typeof ui.progressTotalDays === 'number' ? ui.progressTotalDays : 365);
+  const remainDays = info.past ? 0 : Math.max(0, Math.ceil(info.ms / 86400000));
+  const done = Math.max(0, Math.min(total, total - remainDays));
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+}
+
+/**
+ * 右上角角落卡片的形状路径：卡片贴在屏幕右上角，所以
+ *   左上、右下 = **内凹**圆角（与屏幕边缘平滑相接，"反着的圆角"）
+ *   左下       = 普通外凸圆角
+ *   右上       = 方角（就是屏幕角本身）
+ * border-radius 做不出内凹圆角，所以用 clip-path: path() 精确画出来。
+ */
+function cornerClipPath(w, h, r) {
+  const rr = Math.max(0, Math.min(r, Math.floor(Math.min(w, h) / 2)));
+  if (rr < 1) return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;
+  return [
+    `M ${rr} 0`, // 顶边从左上内凹圆角结束处开始
+    `L ${w} 0`, // 顶边（贴屏幕顶）
+    `L ${w} ${h - rr}`, // 右边（贴屏幕右）
+    `A ${rr} ${rr} 0 0 0 ${w - rr} ${h}`, // 右下：内凹圆角
+    `L ${rr} ${h}`, // 底边
+    `A ${rr} ${rr} 0 0 1 0 ${h - rr}`, // 左下：普通外凸圆角
+    `L 0 ${rr}`,
+    `A ${rr} ${rr} 0 0 0 ${rr} 0`, // 左上：内凹圆角
+    'Z',
+  ].join(' ');
+}
+
+/** 按当前 pill 尺寸重算角落卡片裁剪路径（只有 corner 形态用；其它形态清掉） */
+function applyCornerClip() {
+  const p = $('#pill');
+  if (!p) return;
+  if (state !== 'corner') {
+    p.style.clipPath = '';
+    return;
+  }
+  const w = Math.max(1, p.clientWidth || p.offsetWidth || 0);
+  const h = Math.max(1, p.clientHeight || p.offsetHeight || 0);
+  // 圆角随尺寸自适应：小卡片别被圆角吃掉，大卡片保持"平滑长上去"的观感
+  const r = Math.max(8, Math.min(30, Math.round(Math.min(w, h) * 0.34)));
+  p.style.clipPath = `path('${cornerClipPath(w, h, r)}')`;
+  p.dataset.cornerShape = `w${w} h${h} r${r}`;
 }
 
 /* ---------- 通知展示框自适应：按字体与字数测量，上报主进程调整窗口尺寸 ---------- */
@@ -600,6 +1032,7 @@ function measureNotify() {
   // 弹窗高度 = 上边距 + 标题行 + (正文 margin+行数) + 下边距
   const pillH = PAD_T + TITLE_H + (bodyLines ? 5 + bodyLines * BODY_LH : 0) + PAD_B;
   // 窗口高度 = 顶部边距 + 弹窗 + 间隙 + 免打扰按钮行 + 底部边距
+  // （挖孔避让给禁区留出的深度由主进程 pillSize 统一加上，这里不重复加）
   const h = WIN_TOP + pillH + GAP + DND_H + WIN_BOTTOM;
   window.island.notifySize({ w: Math.round(w), h: Math.round(h) });
 }

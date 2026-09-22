@@ -221,10 +221,25 @@
         bleedWidth: 0, bleedBlur: 0, bleedOpacity: 0.7,
         // glowK：高光强度系数（0 = 无高光，1 = 默认），由「玻璃高光强度」设置驱动
         glow: 0, specOpacity: 0.72, topBoost: 0.5, glowK: 1,
+        // 边缘色散（px，0 = 关闭）：三通道按不同折射量位移后 screen 合成 → 玻璃边缘出现红蓝细边。
+        // 0 时滤镜链与旧版逐字节相同（岛默认不受影响）。
+        aberration: 0,
+        // 多实例支持（玻璃实验室窗口同时渲染多张对照卡）：
+        // root/glassSel 指定容器与玻璃元素，svgHost 指定滤镜 SVG 挂哪儿。
+        // 不传时完全保持原行为（岛：#glass + #lg-svg + lg-disp/lg-bleed/lg-spec 这套 id 不变）。
+        root: null, glassSel: '#glass', svgHost: null,
       },
       opts || {}
     );
-    const gEl = document.getElementById('glass');
+    const host = o.root || document;
+    const inst = !!o.root;
+    const ID = {
+      svg: inst ? `${filterId}-svg` : 'lg-svg',
+      disp: inst ? `${filterId}-disp` : 'lg-disp',
+      bleed: inst ? `${filterId}-bleed` : 'lg-bleed',
+      spec: inst ? `${filterId}-spec` : 'lg-spec',
+    };
+    const gEl = host.querySelector(o.glassSel);
     if (!gEl || !window.SVGElement || !window.CanvasRenderingContext2D) return false;
     const b = gEl.getBoundingClientRect();
     const w = Math.round(b.width);
@@ -242,36 +257,55 @@
     const scale = Math.max(24, Math.round(maxD * 4));
     // 渗色模糊半径同样按高度自适应（细条上 12px 的模糊会糊掉整条边缘）
     const bleedBlur = Math.max(4, Math.min(12, o.bleedBlur || Math.round(rect.h * 0.18)));
+    // —— 边缘色散：R/G/B 各自按不同折射量位移，再 screen 合成 ——
+    // dScale 是「scale 单位的通道差」：满量程通道 = maxD px 位移，所以 abPx 像素差 = scale*abPx/maxD。
+    const abPx = Math.max(0, Math.min(12, Number(o.aberration) || 0));
+    const dScale = abPx > 0 ? Math.max(1, Math.round((scale * abPx) / maxD)) : 0;
+    const CH = (inName, outName, r, g, b) =>
+      `<feColorMatrix in="${inName}" type="matrix" values="${r} 0 0 0 0 ${g} 0 0 0 0 ${b} 0 0 0 0 0 0 0 1 0" result="${outName}"/>`;
+    const refractChain = dScale
+      ? `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${scale + dScale}" xChannelSelector="R" yChannelSelector="G" result="refrR"/>` +
+        `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="refrG"/>` +
+        `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${Math.max(1, scale - dScale)}" xChannelSelector="R" yChannelSelector="G" result="refrB"/>` +
+        CH('refrR', 'chR', 1, 0, 0) +
+        CH('refrG', 'chG', 0, 1, 0) +
+        CH('refrB', 'chB', 0, 0, 1) +
+        `<feBlend in="chR" in2="chG" mode="screen" result="chRG"/>` +
+        `<feBlend in="chRG" in2="chB" mode="screen" result="refracted"/>`
+      : `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="refracted"/>`;
 
-    // filter 结构变更（含 refract scale）或首次：整体重建
-    let svg = document.getElementById('lg-svg');
+    // filter 结构变更（含 refract scale / 色散量）或首次：整体重建
+    let svg = document.getElementById(ID.svg);
     const needRebuild =
       !svg ||
-      !document.getElementById('lg-bleed') ||
+      !document.getElementById(ID.bleed) ||
       svg.getAttribute('data-scale') !== String(scale) ||
+      svg.getAttribute('data-ab') !== String(dScale) ||
       svg.getAttribute('data-w') !== String(w) ||
       svg.getAttribute('data-h') !== String(h);
     if (needRebuild) {
       if (svg && svg.parentNode) svg.parentNode.removeChild(svg);
       svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('id', 'lg-svg');
+      svg.setAttribute('id', ID.svg);
       svg.setAttribute('width', '0');
       svg.setAttribute('height', '0');
       svg.setAttribute('data-scale', String(scale));
+      svg.setAttribute('data-ab', String(dScale));
       svg.setAttribute('data-w', String(w));
       svg.setAttribute('data-h', String(h));
       svg.style.cssText = 'position:absolute;width:0;height:0;overflow:hidden;';
-      document.body.appendChild(svg);
+      (o.svgHost || document.body).appendChild(svg);
       // filter 显式限定 region = 玻璃元素盒：SVG filter 默认 region 比对象大 10%，
       // 输出会溢出 #glass 盒外 → pill 圆角外露方形边。
       svg.innerHTML =
         `<defs><filter id="${filterId}" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">` +
         // 资源图：折射位移 / 渗色掩码 / 镜面高光（像素坐标对齐元素）
-        `<feImage id="lg-disp" href="" result="disp" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
-        `<feImage id="lg-bleed" href="" result="bleedMask" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
-        `<feImage id="lg-spec" href="" result="spec" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
-        // ① 边缘折射：中心零位移（1:1 清晰），边缘带按 SDF 法线向外推
-        `<feDisplacementMap in="SourceGraphic" in2="disp" scale="${scale}" xChannelSelector="R" yChannelSelector="G" result="refracted"/>` +
+        `<feImage id="${ID.disp}" href="" result="disp" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
+        `<feImage id="${ID.bleed}" href="" result="bleedMask" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
+        `<feImage id="${ID.spec}" href="" result="spec" preserveAspectRatio="none" x="0" y="0" width="${w}" height="${h}"/>` +
+        // ① 边缘折射：中心零位移（1:1 清晰），边缘带按 SDF 法线向外推。
+        //    色散开启时改为 R/G/B 三份不同折射量的副本 screen 合成（中心位移仍为 0 → 中心依旧 1:1）
+        refractChain +
         // ② 边缘渗色：小半径模糊背景 → 裁到边缘环带 → 降透明度 → 叠回
         `<feGaussianBlur in="SourceGraphic" stdDeviation="${bleedBlur}" result="bleedSrc"/>` +
         `<feComposite in="bleedSrc" in2="bleedMask" operator="in" result="bleedEdge"/>` +
@@ -289,9 +323,9 @@
         el.setAttribute('height', h);
       }
     };
-    setImg('lg-disp', disp);
-    setImg('lg-bleed', bleed);
-    setImg('lg-spec', spec);
+    setImg(ID.disp, disp);
+    setImg(ID.bleed, bleed);
+    setImg(ID.spec, spec);
     gEl.style.filter = `url(#${filterId})`;
     return true;
   }

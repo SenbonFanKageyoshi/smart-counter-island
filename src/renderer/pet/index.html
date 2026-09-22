@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>pet</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden;
+      font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      -webkit-user-select: none; user-select: none; cursor: default; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+    /* 说话气泡（流式逐字） */
+    #bubble {
+      position: absolute; min-width: 132px; max-width: 260px; padding: 9px 11px;
+      background: rgba(18, 24, 38, 0.95); color: #f2f6ff; border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 14px; font-size: 13px; line-height: 1.5; box-shadow: 0 10px 26px rgba(0,0,0,0.42);
+      opacity: 0; transform: translateY(6px); transition: opacity .16s ease, transform .16s ease; pointer-events: none;
+    }
+    #bubble.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    #bubble::after {
+      content: ''; position: absolute; left: 34px; bottom: -8px; width: 12px; height: 12px;
+      background: rgba(18, 24, 38, 0.95); border-right: 1px solid rgba(255,255,255,0.16);
+      border-bottom: 1px solid rgba(255,255,255,0.16); transform: rotate(45deg);
+    }
+    #text { white-space: pre-wrap; word-break: break-word; }
+    #dots { display: none; color: #9fb4ff; }
+    #dots.on { display: block; }
+    #meta { margin-top: 5px; font-size: 10.5px; color: #8ba0c8; }
+    #quick { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    #quick button {
+      font: inherit; font-size: 11.5px; padding: 3px 8px; border-radius: 999px; cursor: pointer;
+      background: rgba(255,255,255,0.10); color: #dfe8ff; border: 1px solid rgba(255,255,255,0.18);
+    }
+    #quick button:hover { background: rgba(255,255,255,0.2); }
+    #askRow { display: flex; gap: 5px; margin-top: 7px; }
+    #ask { flex: 1; font: inherit; font-size: 12.5px; padding: 4px 7px; border-radius: 8px;
+      background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.2); outline: none; }
+    #send { font: inherit; font-size: 11.5px; padding: 4px 9px; border-radius: 8px; cursor: pointer;
+      background: #3f6dff; color: #fff; border: none; }
+
+    /* 上课/免打扰角标 */
+    #badge { position: absolute; right: 6px; top: 6px; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+      background: rgba(255, 96, 96, 0.9); color: #fff; display: none; }
+    #badge.on { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="pet"></canvas>
+  <div id="bubble">
+    <div id="text"></div>
+    <div id="dots" class="on">●●● 正在想…</div>
+    <div id="meta"></div>
+    <div id="quick"></div>
+    <div id="askRow">
+      <input id="ask" placeholder="打字提问，回车发送…" maxlength="60">
+      <button id="send">发送</button>
+    </div>
+  </div>
+  <div id="badge">上课中</div>
+  <script src="pet.js"></script>
+</body>
+</html>

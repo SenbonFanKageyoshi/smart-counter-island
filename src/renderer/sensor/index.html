@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>Sensor Cover</title>
+<style>
+  /* 传感器盖板：整窗一块纯黑胶囊（圆角 = 窗口高的一半 → 窄长就是胶囊，方形就是圆） */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #cap {
+    width: 100%;
+    height: 100%;
+    background: #000;
+    border-radius: calc(100vh / 2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  /* 自定义文字（模板 + 程序变量，主进程渲染好文本后推下来） */
+  #txt {
+    color: #fff;
+    font: 600 11px/1.2 "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  #txt:empty { display: none; }
+
+  /* —— 可选：把天气画在盖板上（「天气位置 = 盖板上」时主进程推下来）—— */
+  .wx { display: none; align-items: center; gap: 3px; color: #fff; }
+  .wx.on { display: inline-flex; }
+  .wx-sky { position: relative; width: 18px; height: 13px; flex: 0 0 18px; }
+  .wx-sky i { position: absolute; display: none; }
+  .wx-temp { font: 800 11px/1.2 "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  html[data-anim="sun"] .wx-sun { display: block; }
+  html[data-anim="cloud"] .wx-cloud, html[data-anim="rain"] .wx-cloud, html[data-anim="snow"] .wx-cloud,
+  html[data-anim="thunder"] .wx-cloud, html[data-anim="none"] .wx-cloud { display: block; }
+  html[data-anim="rain"] .wx-drop { display: block; }
+  html[data-anim="snow"] .wx-flake { display: block; }
+  html[data-anim="thunder"] .wx-bolt { display: block; }
+  html[data-anim="fog"] .wx-fog { display: block; }
+  .wx-sun { left: 5px; top: 2px; width: 8px; height: 8px; border-radius: 50%; background: radial-gradient(circle at 50% 45%, #ffe9a8, #ffb300); }
+  .wx-cloud { left: 2px; top: 6px; width: 13px; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.92); box-shadow: 2px -3px 0 -1px rgba(255, 255, 255, 0.92), 6px -2px 0 -1.5px rgba(255, 255, 255, 0.8); }
+  .wx-drop { top: 9px; width: 1.5px; height: 4px; border-radius: 1px; background: #8fd3ff; }
+  .wx-drop.d1 { left: 4px; }
+  .wx-drop.d2 { left: 11px; }
+  .wx-flake { top: 9px; width: 3px; height: 3px; border-radius: 50%; background: #fff; }
+  .wx-flake.f1 { left: 5px; }
+  .wx-flake.f2 { left: 12px; }
+  .wx-bolt { left: 8px; top: 6px; width: 5px; height: 8px; background: #ffe066; clip-path: polygon(56% 0, 12% 54%, 45% 54%, 30% 100%, 88% 42%, 52% 42%); }
+  .wx-fog { left: 1px; top: 4px; width: 16px; height: 2px; border-radius: 999px; background: rgba(255, 255, 255, 0.7); }
+  .wx-fog.g2 { top: 9px; width: 12px; left: 4px; }
+</style>
+</head>
+<body>
+  <div id="cap">
+    <span class="wx" id="wx" title="">
+      <span class="wx-sky">
+        <i class="wx-sun"></i><i class="wx-cloud"></i>
+        <i class="wx-drop d1"></i><i class="wx-drop d2"></i>
+        <i class="wx-flake f1"></i><i class="wx-flake f2"></i>
+        <i class="wx-bolt"></i><i class="wx-fog g1"></i><i class="wx-fog g2"></i>
+      </span>
+      <b class="wx-temp" id="wx-temp"></b>
+    </span>
+    <span id="txt"></span>
+  </div>
+  <script src="sensor.js"></script>
+</body>
+</html>
