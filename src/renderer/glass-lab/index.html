@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
+<title>玻璃效果预览</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: #eaf0ff;
+    display: flex;
+    flex-direction: column;
+    /* 面板底：半透明深色玻璃，正好也当一次"真实模糊"的对照（它后面的桌面会被 backdrop-filter 糊掉） */
+    background: rgba(12, 16, 26, 0.72);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.22) inset;
+    overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    -webkit-app-region: drag;   /* 标题栏可拖动 */
+  }
+  /* 关键：拖动区会吞掉子元素的鼠标事件 —— 里面的按钮/复选框必须显式 no-drag，否则点不动 */
+  header .btn,
+  header input,
+  header label,
+  header .ctrl,
+  header button { -webkit-app-region: no-drag; }
+  header h1 { font-size: 14px; font-weight: 700; }
+  header .sub { font-size: 11.5px; color: #9db0d6; }
+  header .spacer { flex: 1; }
+  .btn {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    color: #eaf0ff; border-radius: 9px; padding: 6px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  .btn:hover { border-color: #7aa0ff; color: #bcd0ff; }
+  .btn.primary { background: linear-gradient(180deg, #6a92ff, #3f6dff); border-color: #3f6dff; color: #fff; font-weight: 700; }
+  #close { margin-left: 4px; }
+
+  main { flex: 1; display: flex; gap: 12px; padding: 14px; min-height: 0; }
+  .card { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .card .stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    border-radius: 14px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  /* 玻璃层：桌面截图铺在它上面（与岛一致：#glass 是背景图的载体，滤镜挂在它上面） */
+  .glass {
+    position: absolute;
+    inset: -2px;                 /* 轻微外扩：避免滤镜取样在边缘被裁 */
+    background-repeat: no-repeat;
+    border-radius: 14px;
+    will-change: filter;
+  }
+  .stage .inner {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 4px;
+    border-radius: 14px;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset, 0 0 0 0.5px rgba(255, 255, 255, 0.35) inset;
+    pointer-events: none;
+  }
+  .inner .big { font-size: 30px; font-weight: 800; letter-spacing: 0.5px; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45); }
+  .inner .small { font-size: 12px; opacity: 0.9; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5); }
+  .card .cap { padding: 8px 2px 0; font-size: 12.5px; }
+  .card .cap b { font-weight: 700; }
+  .card .cap span { display: block; color: #9db0d6; font-size: 11.5px; margin-top: 2px; line-height: 1.45; }
+  .card.hero .cap b { color: #a9c4ff; }
+
+  footer {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 10px 14px 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 12px;
+  }
+  .ctrl { display: flex; align-items: center; gap: 7px; }
+  .ctrl label { color: #9db0d6; }
+  .ctrl input[type="range"] { width: 108px; accent-color: #6a92ff; }
+  .ctrl output { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+  .note { color: #8fa2c8; font-size: 11.5px; flex-basis: 100%; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>玻璃效果预览</h1>
+    <span class="sub" id="bgState">正在取屏…</span>
+    <span class="spacer"></span>
+    <label class="ctrl" style="color:#9db0d6"><input type="checkbox" id="live"> 实时背景（每 2.2s 重取，会闪一下）</label>
+    <button class="btn" id="refresh">重新取屏</button>
+    <button class="btn primary" id="apply">把这组参数用到小岛</button>
+    <button class="btn" id="close">关闭</button>
+  </header>
+
+  <main>
+    <div class="card" data-card="capture">
+      <div class="stage"><div class="glass" id="g-capture"></div>
+        <div class="inner"><div class="big">128</div><div class="small">剩余 128 天</div></div>
+      </div>
+      <div class="cap"><b>真实模糊（现状）</b><span>截屏 + 高斯模糊 + 提色：中心也糊，看不出玻璃厚度</span></div>
+    </div>
+
+    <div class="card" data-card="liquid">
+      <div class="stage"><div class="glass" id="g-liquid"></div>
+        <div class="inner"><div class="big">128</div><div class="small">剩余 128 天</div></div>
+      </div>
+      <div class="cap"><b>液态玻璃 CPU（现状）</b><span>中心 1:1 原画，只有边缘折射带 + 渗色 + 高光</span></div>
+    </div>
+
+    <div class="card hero" data-card="ab2">
+      <div class="stage"><div class="glass" id="g-ab2"></div>
+        <div class="inner"><div class="big">128</div><div class="small">剩余 128 天</div></div>
+      </div>
+      <div class="cap"><b>＋边缘色散 2px（候选）</b><span>R/G/B 三次折射错位合成：边缘出现红蓝细边</span></div>
+    </div>
+
+    <div class="card hero" data-card="ab5">
+      <div class="stage"><div class="glass" id="g-ab5"></div>
+        <div class="inner"><div class="big">128</div><div class="small">剩余 128 天</div></div>
+      </div>
+      <div class="cap"><b>＋色散 5px ＋强折射（候选）</b><span>色散更明显、折射带更厚一档</span></div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="ctrl"><label>折射强度</label><input type="range" id="maxRefract" min="2" max="18" step="1" value="7"><output id="o-maxRefract"></output></div>
+    <div class="ctrl"><label>折射带宽</label><input type="range" id="refractWidth" min="3" max="64" step="1" value="20"><output id="o-refractWidth"></output></div>
+    <div class="ctrl"><label>渗色</label><input type="range" id="bleedOpacity" min="0" max="100" step="5" value="70"><output id="o-bleedOpacity"></output></div>
+    <div class="ctrl"><label>高光</label><input type="range" id="glow" min="0" max="200" step="10" value="100"><output id="o-glow"></output></div>
+    <div class="ctrl"><label>色散(px)</label><input type="range" id="aberration" min="0" max="8" step="0.5" value="2"><output id="o-aberration"></output></div>
+    <div class="ctrl"><label>模糊(真实模糊卡)</label><input type="range" id="blur" min="0" max="40" step="2" value="16"><output id="o-blur"></output></div>
+    <div class="note" id="note">背景 = 按下「重新取屏」那一刻的桌面（取屏前会自动把本窗口隐藏，免得拍到自己）；想拿别处的画面做背景，先把窗口拖过去再取屏。前两张是现状对照，后两张是候选（色散滑块同时作用于它们）。满意就点「把这组参数用到小岛」，我再把「真实模糊」这一项替换掉。</div>
+  </footer>
+
+  <script src="../island/liquid-glass.js"></script>
+  <script src="lab.js"></script>
+</body>
+</html>
