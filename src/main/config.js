@@ -24,11 +24,17 @@ function open() {
   opening = true;
   loaded = false;
   win = new BrowserWindow({
-    width: 660,
-    height: 780,
-    minWidth: 560,
-    minHeight: 620,
+    width: 900,
+    height: 820,
+    minWidth: 660,
+    minHeight: 560,
     title: 'Smart Counter Island · 配置',
+    // 无边框 + Win11 亚克力：窗口背后的真实桌面被系统模糊/提色 = 真液态玻璃底
+    // （Win10 或不支持时 setBackgroundMaterial 会抛错，CSS 自带深色玻璃兜底）
+    frame: false,
+    backgroundColor: '#00000000',
+    roundedCorners: true,
+    thickFrame: true, // 无边框也保留边缘可拖拽缩放
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     show: false, // 加载完成后再显示，避免白屏闪现
@@ -40,6 +46,11 @@ function open() {
       backgroundThrottling: false,
     },
   });
+  try {
+    win.setBackgroundMaterial('acrylic');
+  } catch (e) {
+    /* Win10 / 不支持：忽略，CSS 兜底 */
+  }
   win.setMenuBarVisibility(false);
   // 配置窗口不置顶（用户反馈置顶烦人）；小岛放大态可能盖住它，从托盘/小岛双击仍可重新打开
   win.webContents.on('did-finish-load', () => {
@@ -88,4 +99,46 @@ function broadcastChanged() {
   }
 }
 
-module.exports = { open, close, isOpen, isLoaded, getWindow, broadcastChanged };
+/** 无边框窗口的最小化（自绘窗口按钮用；关闭走 close()） */
+function minimize() {
+  if (win && !win.isDestroyed()) win.minimize();
+  return true;
+}
+
+/** 无边框窗口的最大化/还原（标题栏双击） */
+function toggleMaximize() {
+  if (!win || win.isDestroyed()) return false;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+  return true;
+}
+
+/** 无边框窗口的拖动：让系统按鼠标位置自己搬窗口（比 CSS -webkit-app-region 更跟手） */
+function dragStart(sx, sy) {
+  if (!win || win.isDestroyed()) return false;
+  try {
+    const b = win.getBounds();
+    win.__dragFrom = { x: b.x, y: b.y, sx: Number(sx) || 0, sy: Number(sy) || 0 };
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function dragMove(sx, sy) {
+  if (!win || win.isDestroyed() || !win.__dragFrom) return false;
+  try {
+    const d = win.__dragFrom;
+    win.setBounds({ x: Math.round(d.x + (Number(sx) - d.sx)), y: Math.round(d.y + (Number(sy) - d.sy)), width: win.getBounds().width, height: win.getBounds().height });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function dragEnd() {
+  if (win && !win.isDestroyed()) win.__dragFrom = null;
+  return true;
+}
+
+module.exports = { open, close, isOpen, isLoaded, getWindow, broadcastChanged, minimize, toggleMaximize, dragStart, dragMove, dragEnd };

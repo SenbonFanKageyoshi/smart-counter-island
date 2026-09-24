@@ -28,6 +28,9 @@ body[data-ink="light"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.75); 
    黑色胶囊上，几乎看不见（灵动岛最常见的"显示不对"）。 */
 body[data-glass="off"],
 body[data-state="notify"],
+body[data-state="dock"],
+body[data-state="corner"],
+body[data-state="progress"],
 body[data-state="strip"][data-strip="black"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
 
 /* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） =====
@@ -112,6 +115,50 @@ body[data-state="strip"]    #pill { border-radius: 13px; }
 body[data-state="expanded"] #pill { border-radius: 999px; }
 body[data-state="zoom"]     #pill { border-radius: 42px; }
 body[data-state="notify"]   #pill { border-radius: 24px; }
+body[data-state="dock"]     #pill { border-radius: 24px; }
+/* 全屏授课形态：窗口本身就等于卡片（无 PAD），形状只留朝屏幕内侧的圆角 */
+/* 角落卡片：左上/右下是**内凹**圆角、左下是普通外凸圆角 → 由 JS 算 clip-path 精确绘制
+   （border-radius 只能做外凸圆角，做不出"反着的圆角"） */
+body[data-state="corner"]   #pill { left: 0; top: 0; right: 0; bottom: 0; border-radius: 0; }
+body[data-state="progress"] #pill { left: 0; top: 0; right: 0; bottom: 0; border-radius: 0 0 12px 12px; }
+
+/* —— 全屏授课：右上角角落卡片（贴屏幕右上角，只显示剩余时间） —— */
+body[data-state="corner"] #pill {
+  background: rgba(0, 0, 0, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+body[data-state="corner"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.72); }
+body[data-state="corner"] #content {
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 20px 0 16px;
+}
+.cz-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.cz-mid { display: flex; align-items: baseline; gap: 6px; color: var(--ink); }
+.cz-num { font-size: 32px; font-weight: 800; line-height: 1.05; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+.cz-unit { font-size: 14px; font-weight: 700; }
+.cz-time { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* —— 全屏授课：屏幕顶部倒计时进度条（贴顶整宽 + 填充进度） —— */
+body[data-state="progress"] #pill {
+  background: rgba(0, 0, 0, 0.72);
+  box-shadow: inset 0 -1px 0 1px rgba(255, 255, 255, 0.07);
+}
+body[data-state="progress"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.7); }
+body[data-state="progress"] #content { display: block; height: 100%; }
+.pb-wrap { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.pb-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(79, 124, 255, 0.85), rgba(126, 166, 255, 0.95));
+  transition: width 0.6s ease;
+}
+.pb-label {
+  position: relative; display: flex; align-items: baseline; gap: 8px;
+  font-size: 11px; letter-spacing: 0.2px; color: var(--ink);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.pb-name { font-weight: 700; }
+.pb-num { font-weight: 800; font-variant-numeric: tabular-nums; }
+.pb-time { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 
 /* —— 模拟玻璃（fake）：渐变 + 噪点，文字色随亮度 —— */
 body[data-glass="fake"] #pill {
@@ -356,12 +403,107 @@ body[data-glass="capture"] .z-unit {
 }
 
 .empty { font-size: 14px; color: var(--ink-soft); }
+/* 无倒计时事件时的天气排布：提示在上、天气 chip 在下（竖排居中） */
+.empty-wrap { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.empty-wrap .empty { font-size: 12px; }
+.empty-wrap .wx { margin-left: 0; }
+
+/* —— 传感器避让 ——
+   禁区那块黑由独立的「传感器盖板」窗口负责（纯黑胶囊、永久置顶、永不移动）；
+   小岛这边只负责把内容让开禁区：位置/尺寸按「屏幕坐标 - 窗口坐标」实时换算。 */
+/* 调试层：传感器彩色圆点 + 禁区虚线框（规格 interaction.toggle_sensor） */
+#sensor-debug {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+#sensor-debug .sd-zone {
+  position: absolute;
+  border: 1px dashed rgba(255, 255, 255, 0.75);
+  box-sizing: border-box;
+}
+#sensor-debug .sd-dot {
+  position: absolute;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content） */
+@keyframes sci-content-in {
+  from { opacity: 0; translate: 0 4px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+body[data-notch="1"] #content > * { animation: sci-content-in 0.3s ease-out both; }
+/* split 布局：图标在传感器左侧、数字在右侧，中间那条空隙正好等于禁区宽度 + 左右空隙，
+   整行居中 → 内容紧挨着传感器，不会一个贴最左一个贴最右，也不会被裁掉。
+   ⚠️ 两瓣必须 flex:0 0 auto（永不压缩）：曾经给它们加 min-width:0 + flex-shrink:1 当"兜底"，
+   结果窗口刚创建还是细条初始尺寸（pill 116 < 空隙 113+槽位）时两瓣被压成 11px/0px，
+   数字整块被裁掉且之后不再重排 —— 就是"刚启动没文字、展开收起后才出现"的真凶。
+   兜底改为只加在整行上：行内 overflow:hidden，宁可边缘裁一点，绝不让两瓣塌成 0。 */
+body[data-notch="1"][data-notch-layout="split"] .s-row,
+body[data-notch="1"][data-notch-layout="split"] .e-row {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  justify-content: center;
+  overflow: hidden;
+}
+body[data-notch="1"][data-notch-layout="split"] .nb-l,
+body[data-notch="1"][data-notch-layout="split"] .nb-r {
+  flex: 0 0 auto;
+}
+body[data-notch="1"] .nb-l, body[data-notch="1"] .nb-r {
+  display: inline-flex; align-items: inherit; gap: inherit; min-width: 0;
+}
+.nb-gap {
+  flex: 0 0 auto;      /* 空隙宽度=禁区宽+左右槽位，固定值（两瓣永不压缩才是安全方向） */
+  align-self: stretch;
+  width: calc(var(--notch-gap, 0px) + var(--notch-slot-l, 14px) + var(--notch-slot-r, 12px));
+}
+/* below 布局：内容从禁区底边下方开始（横幅 / 倒计时窗口 / 通知弹窗都往传感器下方长） */
+body[data-notch="1"][data-notch-layout="below"][data-state="expanded"] #content,
+body[data-notch="1"][data-notch-layout="below"][data-state="zoom"] #content,
+body[data-notch="1"][data-notch-layout="below"][data-state="notify"] #content {
+  padding-top: var(--notch-pad-t, 0px);
+}
+/* 顶部进度条整宽贴顶，禁区正在中间 → 文字整段让到禁区右侧 */
+body[data-notch="1"][data-state="progress"] .pb-label {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--notch-cx, 50%) + var(--notch-half, 0px) + 10px);
+  transform: translateY(-50%);
+}
 
 /* —— 细条 strip（黑底白字） —— */
 .s-row { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #ffffff; }
 .s-emoji { font-size: 13px; }
-.s-num { font-weight: 800; font-size: 14px; color: #ffffff; }
-.s-unit { color: rgba(255, 255, 255, 0.75); }
+
+/* 「去掉所有图标内容」：细条左瓣保留一块等宽占位（不画图标）。
+   保留宽度是为了让禁用区分割布局的行宽/居中不变 —— 直接删掉左瓣会让右瓣
+   顶进禁区带，被布局兜底裁切。 */
+.s-emoji.s-noicon { width: 18px; min-width: 18px; height: 1px; display: inline-block; }
+/* 没有事件名时（极少）左瓣留一块小留白，保持两侧不至于一边倒 */
+.s-name.s-noicon { width: 14px; min-width: 14px; height: 1px; }
+.s-num { font-weight: 800; font-size: 13.5px; color: #ffffff; letter-spacing: -0.2px; }
+.s-unit { color: rgba(255, 255, 255, 0.78); font-size: 12.5px; font-weight: 600; }
+/* 细条左瓣：事件名（填空 + 与右侧天数左右平衡）。
+   与天数同级字号、略低对比度 → 一眼看先看到天数，再看是什么事件。
+   限宽 4.2em：太长就省略号，避免左右瓣宽度差过大导致某一瓣顶进禁区带。 */
+.s-name {
+  display: inline-block;
+  /* 限宽 4em（≈50px）：几何上左瓣 ≤58px 才能保证「整行居中」后空隙仍完整盖住禁区带
+     （空隙 113 = 禁区 87 + 两侧槽位 26 → 左右瓣宽度差最多 26px）；再宽就会被兜底裁切。 */
+  max-width: 4.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 12px / 无字距：3–4 个汉字（36–48px）都能完整显示，不会卡在亚像素上被省略号截掉 */
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.86);
+  letter-spacing: 0;
+}
 /* 细条「跟随玻璃效果」时，底色变成背后的真实画面（可能很亮）→
    文字必须像横幅那样跟随背景亮度自适应，否则亮壁纸下白字贴白墙看不清 */
 body[data-state="strip"][data-strip="glass"] .s-row,
@@ -450,6 +592,51 @@ body[data-state="strip"][data-strip="glass"] .s-unit { color: var(--ink-soft); }
 
 /* ===== 系统通知弹窗（黑底白字；只含标题+正文，正文最多 2 行） =====
    免打扰按钮在 #dnd-bar（弹窗下方独立胶囊），见上方。行高固定 px，与渲染器测量一致。 */
+/* —— 计时坞（节假日倒计时）：黑底白字，效果同通知 —— */
+body[data-state="dock"] #pill {
+  top: 8px; left: 8px; right: 8px; bottom: 8px;
+  background: #000000;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.dk-wrap {
+  width: 100%; height: 100%;
+  padding: 10px 18px;
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+}
+.dk-title {
+  font-size: 16px; font-weight: 700; line-height: 22px;
+  color: rgba(255, 255, 255, 0.88);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dk-mid { display: flex; align-items: baseline; gap: 6px; }
+.dk-num { font-size: 30px; font-weight: 800; line-height: 34px; color: #ffffff; font-variant-numeric: tabular-nums; }
+.dk-unit { font-size: 15px; font-weight: 700; color: rgba(255, 255, 255, 0.85); }
+.dk-date { margin-left: auto; font-size: 12.5px; color: rgba(255, 255, 255, 0.55); }
+
+/* 长按反馈：只把整块稍微放大（不做进度条）。
+   按住中 1.04，触发瞬间 1.07，隂后回落到常规 */
+#pill { transition: transform 0.13s cubic-bezier(0.22, 0.61, 0.36, 1); }
+body.pressing #pill { transform: scale(1.04); }
+body.press-fired #pill { transform: scale(1.07); transition: transform 0.1s ease-out; }
+
+/* 计时坞快捷添加态：预设天数芯片（黑底白字，与通知窗同色系） */
+.dk-edit { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.dk-hint { font-size: 11.5px; color: rgba(255, 255, 255, 0.6); }
+.dk-chip {
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.dk-chip:hover { background: rgba(255, 255, 255, 0.2); border-color: rgba(255, 255, 255, 0.5); }
+.dk-chip.ghost { background: transparent; color: rgba(255, 255, 255, 0.75); }
+.dk-chip.done { background: #3f6dff; border-color: #3f6dff; font-weight: 700; }
+
 .n-wrap {
   width: 100%; height: 100%;
   padding: 12px 16px 10px;
@@ -491,4 +678,243 @@ body[data-state="strip"][data-strip="glass"] .s-unit { color: var(--ink-soft); }
 }
 .n-body.n-shake {
   animation: n-alert-jitter 0.2s ease-out 1;
+}
+
+/* ===== 天气 chip（横幅 / 大卡片内联；细条不渲染，保持 116 宽几何契约） =====
+   图标用 CSS 形状拼（不引外部资源）：太阳/云/雨丝/雪花/雷/雾都在 20×14 的画布里，
+   由 data-anim 决定谁显示、谁在动；--wx-i（动画强度 0-2）同时缩放动画时长。 */
+.wx {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.wx.wx-stale { opacity: 0.62; }
+
+/* 细条常驻：紧凑态只出图标 + 温度，绝对定位贴在细条右缘。
+   绝对定位是关键 —— 不参与整行居中，所以挖孔 split 布局里「两瓣紧贴传感器」的几何完全不变。 */
+.wx[data-compact="1"] {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 0;
+  gap: 3px;
+  padding: 0 6px 0 4px;
+  font-size: 10.5px;
+  line-height: 15px;
+}
+.wx[data-compact="1"] .wx-text { display: none; }
+.wx[data-compact="1"] .wx-temp { font-weight: 800; font-size: 11px; }
+/* 位置=左侧：镜像贴左缘（细条会多留一格在左边，两瓣与禁区的相对位置不变） */
+.wx[data-compact="1"][data-side="left"] { right: auto; left: 6px; }
+.wx-temp { font-weight: 800; font-variant-numeric: tabular-nums; }
+.wx-text { font-style: normal; font-size: 10px; font-weight: 500; color: var(--ink-soft); }
+.wx-sky { position: relative; width: 20px; height: 14px; flex: 0 0 20px; }
+.wx-sky i { position: absolute; display: none; }
+
+/* 太阳：圆盘 + 四道光线（旋转） */
+.wx-sun {
+  left: 5px; top: 2px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, #ffe9a8, #ffb300);
+}
+.wx-sun::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 214, 102, 0.95) 0 5%, transparent 5% 25%,
+    rgba(255, 214, 102, 0.95) 25% 30%, transparent 30% 50%,
+    rgba(255, 214, 102, 0.95) 50% 55%, transparent 55% 75%,
+    rgba(255, 214, 102, 0.95) 75% 80%, transparent 80% 100%
+  );
+  animation: wx-spin calc(var(--wx-i, 1) * 7s) linear infinite;
+}
+@keyframes wx-spin { to { transform: rotate(360deg); } }
+
+/* 云：圆角胖条 + 两个凸起；晴天以外的天气都用它 */
+.wx-cloud {
+  left: 3px; top: 6px;
+  width: 13px; height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 2px -3px 0 -1px rgba(255, 255, 255, 0.92), 6px -2px 0 -1.5px rgba(255, 255, 255, 0.8);
+  animation: wx-drift calc(var(--wx-i, 1) * 4.4s) ease-in-out infinite alternate;
+}
+.wx-cloud.b { left: 6px; top: 4px; opacity: 0.5; transform: scale(0.78); }
+@keyframes wx-drift { from { transform: translateX(-1px); } to { transform: translateX(2px); } }
+
+/* 雨丝：三滴错峰下落 */
+.wx-drop {
+  top: 9px;
+  width: 1.5px; height: 4px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, rgba(160, 215, 255, 0), #8fd3ff);
+  animation: wx-fall calc(var(--wx-i, 1) * 0.9s) linear infinite;
+}
+.wx-drop.d1 { left: 4px; animation-delay: -0.05s; }
+.wx-drop.d2 { left: 8px; animation-delay: -0.35s; }
+.wx-drop.d3 { left: 12px; animation-delay: -0.65s; }
+@keyframes wx-fall {
+  0% { transform: translateY(-2px); opacity: 0; }
+  25% { opacity: 0.95; }
+  100% { transform: translateY(4px); opacity: 0; }
+}
+
+/* 雪花：两片飘落（带横向摆动） */
+.wx-flake {
+  top: 8px;
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 3px rgba(220, 240, 255, 0.8);
+  animation: wx-sway calc(var(--wx-i, 1) * 2.4s) linear infinite;
+}
+.wx-flake.f1 { left: 6px; animation-delay: -0.2s; }
+.wx-flake.f2 { left: 12px; animation-delay: -1.1s; }
+@keyframes wx-sway {
+  0% { transform: translate(-2px, -2px); opacity: 0; }
+  25% { opacity: 0.95; }
+  100% { transform: translate(2px, 5px); opacity: 0; }
+}
+
+/* 雷电：短闪的折线 */
+.wx-bolt {
+  left: 9px; top: 6px;
+  width: 5px; height: 8px;
+  background: #ffe066;
+  clip-path: polygon(56% 0, 12% 54%, 45% 54%, 30% 100%, 88% 42%, 52% 42%);
+  filter: drop-shadow(0 0 3px rgba(255, 224, 102, 0.9));
+  animation: wx-flash calc(var(--wx-i, 1) * 2.2s) steps(1, end) infinite;
+}
+@keyframes wx-flash {
+  0%, 58%, 100% { opacity: 0; }
+  60%, 66% { opacity: 1; }
+  70% { opacity: 0.2; }
+  74% { opacity: 1; }
+}
+
+/* 雾：两条横向带（缓慢横移） */
+.wx-fog {
+  left: 1px; top: 4px;
+  width: 17px; height: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  animation: wx-slide calc(var(--wx-i, 1) * 3.2s) ease-in-out infinite alternate;
+}
+.wx-fog.g2 { top: 9px; width: 13px; left: 4px; animation-delay: -1.4s; }
+@keyframes wx-slide { from { transform: translateX(-2px); } to { transform: translateX(3px); } }
+
+/* 谁出场：由 data-anim 决定 */
+.wx[data-anim="sun"] .wx-sun { display: block; }
+.wx[data-anim="cloud"] .wx-cloud,
+.wx[data-anim="rain"] .wx-cloud,
+.wx[data-anim="snow"] .wx-cloud,
+.wx[data-anim="thunder"] .wx-cloud,
+.wx[data-anim="none"] .wx-cloud { display: block; }
+.wx[data-anim="rain"] .wx-drop { display: block; }
+.wx[data-anim="snow"] .wx-flake { display: block; }
+.wx[data-anim="thunder"] .wx-bolt { display: block; }
+.wx[data-anim="fog"] .wx-fog { display: block; }
+.wx[data-anim="none"] .wx-sky i { animation: none; }
+.wx[data-anim="sun"] .wx-cloud,
+.wx[data-anim="fog"] .wx-cloud { display: none; }
+
+/* 用户/系统要求减少动效：一律静止（文字与图标照常显示） */
+@media (prefers-reduced-motion: reduce) {
+  .wx-sky i,
+  #wx-fx i,
+  #wx-fx::after { animation: none !important; }
+}
+
+/* ===== 天气提醒的整条岛特效（通知形态） =====
+   纯装饰层：不挡鼠标、不参与布局；层数由渲染层按动画强度生成（--wx-i 同时缩放时长）。 */
+.wx-fx {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.wx-fx[hidden] { display: none; }
+.wx-fx i { position: absolute; display: block; }
+
+.wx-fx[data-fx="rain"] i,
+.wx-fx[data-fx="thunder"] i {
+  top: -16%;
+  left: calc(3% + var(--i) * 6.2%);
+  width: 1.5px; height: 10px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, rgba(180, 225, 255, 0), rgba(180, 225, 255, 0.85));
+  animation: wx-fall-fx calc(var(--wx-i, 1) * 1s) linear infinite;
+  animation-delay: calc(var(--i) * -0.11s);
+}
+@keyframes wx-fall-fx {
+  0% { transform: translateY(-8px); opacity: 0; }
+  18% { opacity: 0.9; }
+  100% { transform: translateY(70px); opacity: 0; }
+}
+
+.wx-fx[data-fx="snow"] i {
+  top: -14%;
+  left: calc(4% + var(--i) * 7.4%);
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  animation: wx-sway-fx calc(var(--wx-i, 1) * 2.6s) linear infinite;
+  animation-delay: calc(var(--i) * -0.17s);
+}
+@keyframes wx-sway-fx {
+  0% { transform: translate(-3px, -6px); opacity: 0; }
+  22% { opacity: 0.95; }
+  100% { transform: translate(4px, 66px); opacity: 0; }
+}
+
+.wx-fx[data-fx="sun"] {
+  background: radial-gradient(circle at 84% 14%, rgba(255, 214, 110, 0.4), rgba(255, 214, 110, 0) 46%);
+  animation: wx-glow-fx calc(var(--wx-i, 1) * 3.4s) ease-in-out infinite alternate;
+}
+.wx-fx[data-fx="sun"] i { display: none; }
+@keyframes wx-glow-fx { from { opacity: 0.5; } to { opacity: 1; } }
+
+.wx-fx[data-fx="cloud"] i,
+.wx-fx[data-fx="fog"] i {
+  top: calc(10% + var(--i) * 13%);
+  left: -14%;
+  width: 48%; height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  animation: wx-pass-fx calc(var(--wx-i, 1) * 6.5s) linear infinite;
+  animation-delay: calc(var(--i) * -0.9s);
+}
+.wx-fx[data-fx="fog"] i { height: 7px; background: rgba(255, 255, 255, 0.15); }
+@keyframes wx-pass-fx { from { transform: translateX(0); } to { transform: translateX(260px); } }
+
+.wx-fx[data-fx="thunder"]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.16);
+  opacity: 0;
+  animation: wx-flash-fx calc(var(--wx-i, 1) * 2.2s) steps(1, end) infinite;
+}
+@keyframes wx-flash-fx {
+  0%, 68%, 100% { opacity: 0; }
+  70%, 76% { opacity: 0.85; }
+  80% { opacity: 0.18; }
+  84% { opacity: 0.7; }
 }

@@ -16,7 +16,8 @@ if (!token || !target) {
   process.exit(1);
 }
 const REPO = 'SenbonFanKageyoshi/smart-counter-island';
-const TITLE = `${TAG} 液态玻璃（GPU）· 壁纸轮换 · 开机自启状态修正`;
+// 标题不再写死：发版时用说明文件的第一个 # 标题（见 main()），缺省才退回 tag 名
+const TITLE_FALLBACK = `${TAG} Smart Counter Island`;
 
 function api(host, method, pathname, body, headers) {
   return new Promise((resolve, reject) => {
@@ -42,6 +43,9 @@ function api(host, method, pathname, body, headers) {
 async function main() {
   if (!fs.existsSync(NOTES)) throw new Error(`缺少说明文件: ${NOTES}`);
   const BODY = fs.readFileSync(NOTES, 'utf8');
+  // 标题：优先取说明文件的第一个 # 标题（发版标题跟着说明走，不用每次改脚本）
+  const headLine = (BODY.split(/\r?\n/).find((l) => /^#\s+/.test(l)) || '').replace(/^#\s+/, '').trim();
+  const TITLE = headLine || TITLE_FALLBACK;
   const files = [
     path.join('release', `SmartCounterIsland-Setup-${VERSION}.exe`),
     path.join('release', `SmartCounterIsland-${VERSION}-portable.exe`),
