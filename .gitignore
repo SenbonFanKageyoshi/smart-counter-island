@@ -23,3 +23,15 @@ winui3-poc/
 
 # ÎŞ¹ØÏîÄ¿£¨ÎğÌá½»£©
 transcribe/
+# Python åˆ†æå·¥å…·ï¼ˆwaste_electrolysis_analyzerï¼‰
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.tools/
+outputs/
+demo_input/
+_fontcheck*/
+_t/
+_t_out/
+*.egg-info/
+.venv/

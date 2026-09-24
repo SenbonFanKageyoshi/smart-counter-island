@@ -203,6 +203,7 @@ function Get-GenericNotifs {
   $handles = [Probe]::FindNotifCandidates($myPid, [string[]]$script:BLACKLIST, 100, 720, 40, 520)
   $new = @()
   foreach ($h in $handles) {
+    Assert-HostAlive
     $hInt = [intptr]$h
     $r = [Probe]::GetRectOf($hInt)
     if ($null -eq $r) { continue }
@@ -226,6 +227,7 @@ function Get-GenericNotifs {
     foreach ($k in $dead) { [void]$script:notifFp.Remove($k) }
   }
   foreach ($hInt in $new) {
+    Assert-HostAlive
     $info = Get-NotificationText($hInt)
     if ($info -ne '') {
       $result += ($hInt.ToInt64().ToString() + '|' + $info)
@@ -234,8 +236,26 @@ function Get-GenericNotifs {
   return $result
 }
 
+# host process id (set by the app): if it disappears we must not linger as an orphan
+$script:hostPid = 0
+try { $script:hostPid = [uint32]$env:LGC_PID } catch { $script:hostPid = 0 }
+if ($script:hostPid -gt 0 -and $null -eq (Get-Process -Id $script:hostPid -ErrorAction SilentlyContinue)) { exit }
+$script:hostCheck = 0
+
+# Called from inside long loops too (notification enumeration can sit in UI Automation
+# for a while): without this an app that is hard-killed leaves us sampling forever.
+function Assert-HostAlive {
+  if ($script:hostPid -le 0) { return }
+  $script:hostCheck += 1
+  if (($script:hostCheck % 3) -ne 0) { return }
+  if ($null -eq (Get-Process -Id $script:hostPid -ErrorAction SilentlyContinue)) { exit }
+}
+
 while ($true) {
+  # -- exit if the host app is gone (hard kill / crash leaves no 'quit' on stdin) --
+  Assert-HostAlive
   # -- rounded hit-region command --
+  # format: "hwnd x y w h r"
   if (Test-Path -LiteralPath $regionFile) {
     try {
       $content = (Get-Content -LiteralPath $regionFile -Raw).Trim()
