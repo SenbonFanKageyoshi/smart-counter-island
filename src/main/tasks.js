@@ -1,10 +1,12 @@
 'use strict';
-/* 计划任务：定时关机 / 运行命令 / 定时提醒
-   - 定时关机：提醒文案固定（不可自定义），可设置「关机前几分钟提醒」；
-     提醒与关机时通知均带「取消关机」按钮，取消后当天不再触发
-   - 程序运行期间由本模块定时检查执行（30 秒粒度） */
+/* 提醒与计划任务
+   - 定时提醒 / 定时关机 / 运行命令：老师手动配的条目（30 秒粒度检查）
+   - 课堂提醒：由「时间表」自动驱动（课前 N 分钟 / 上课 / 下课前 N 分钟 / 下课），
+     不需要一条条配；与系统通知的免打扰互不影响（课堂提醒属于教学刚需，必须弹）
+   两套提醒共用同一份课表计算（./schedule），避免各写一套解析 */
 const { exec } = require('child_process');
 const settings = require('./settings');
+const sched = require('./schedule');
 
 const TASK_NAMES = {
   shutdown: '定时关机',
@@ -12,21 +14,9 @@ const TASK_NAMES = {
   remind: '定时提醒',
 };
 
-function parseHM(s) {
-  const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
-}
-
-function fmtHM(min) {
-  const t = ((Math.round(min) % 1440) + 1440) % 1440;
-  return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
-}
-
-function localDate(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
+const parseHM = sched.parseHM;
+const fmtHM = sched.fmtHM;
+const localDate = sched.localDate;
 
 function dayMatch(days, now) {
   if (days === 'daily') return true;
@@ -153,4 +143,79 @@ function cancelShutdowns() {
   settings.update({ tasks });
 }
 
-module.exports = { TASK_NAMES, parseHM, fmtHM, localDate, trigger, checkTasks, cancelShutdowns };
+/* ---------------- 课堂提醒（时间表驱动） ---------------- */
+
+let classFiredKeys = new Set();
+
+/** 默认动作：弹一条提醒通知（教学刚需，不受系统通知免打扰影响） */
+function defaultClassExec(r) {
+  const island = require('./island');
+  island.showNotification(r.title, r.body, { alert: true, keywords: ['上课', '下课'] });
+}
+
+/**
+ * 检查并按需弹出课堂提醒。execFn 可注入（测试用）：(reminder) => void
+ * 返回本次触发的提醒列表（已去重：同一天同一节同一触发点只提醒一次）
+ */
+function checkClassReminders(now, execFn) {
+  const st = settings.load();
+  const cfg = (st.schedule && st.schedule.notify) || {};
+  if (cfg.enabled === false) return [];
+  const fired = sched.classReminders(now, st.schedule, cfg);
+  const out = [];
+  for (const r of fired) {
+    const key = sched.reminderKey(r);
+    if (classFiredKeys.has(key)) continue;
+    classFiredKeys.add(key);
+    out.push(r);
+    (execFn || defaultClassExec)(r);
+  }
+  // 换天清理去重表，避免无限增长
+  if (classFiredKeys.size > 200) {
+    const today = localDate(now);
+    const yKey = localDate(new Date(now.getTime() - 86400000));
+    for (const k of Array.from(classFiredKeys)) {
+      if (!k.startsWith(today) && !k.startsWith(yKey)) classFiredKeys.delete(k);
+    }
+  }
+  return out;
+}
+
+/** 清空课堂提醒去重状态（测试用） */
+function resetClassReminders() {
+  classFiredKeys = new Set();
+}
+
+/** 课表摘要（配置页预览用）：当前这节 + 下一节（只返回可序列化数据，IPC 不能传函数） */
+function classPreview(now) {
+  const st = settings.load();
+  const s = st.schedule || {};
+  const cur = sched.periodAt(s, now);
+  const nxt = sched.nextPeriod(s, now);
+  return {
+    enabled: !!s.enabled,
+    current: cur ? { label: sched.periodLabel(cur.index, cur.period.name), start: cur.period.start, end: cur.period.end } : null,
+    next: nxt
+      ? {
+          label: sched.periodLabel(nxt.index, nxt.period.name),
+          start: nxt.period.start,
+          inMin: nxt.isTomorrow ? null : Math.max(0, Math.round(nxt.startAt - (now.getHours() * 60 + now.getMinutes()))),
+          isTomorrow: !!nxt.isTomorrow,
+        }
+      : null,
+  };
+}
+
+module.exports = {
+  TASK_NAMES,
+  parseHM,
+  fmtHM,
+  localDate,
+  trigger,
+  checkTasks,
+  cancelShutdowns,
+  checkClassReminders,
+  resetClassReminders,
+  classPreview,
+  sched,
+};

@@ -1,0 +1,108 @@
+# 电解池处理含铅废液数据分析 · 配置示例
+#
+# 用法：
+#   python -m waste_electrolysis_analyzer.cli --config config.example.yaml --csv data.csv
+#   或直接改好路径后：python -m waste_electrolysis_analyzer.cli --config config.example.yaml
+#
+# 说明：本文件中的所有取值都是**示例值**，请按实际实验条件修改。
+#       未在此文件中出现的配置项一律使用 config.py 中的内置默认值。
+#       注意：--param / --set 命令行参数的优先级高于本文件。
+
+inputs:
+  csv: data/electrolysis_run01.csv     # 必需列：t, I（U/kappa/T 可选但强烈建议）
+  video: data/run01.mp4                # 可填视频文件，或帧图片目录；不分析图像时留空
+  mapping:                             # 原始列名 → 标准列名（仅在列名不标准时需要）
+    time_s: t
+    current_A: I
+    cell_V: U
+    cond_S_m: kappa
+    temp_C: T
+  video_frame_stride: 5                # 每 5 帧取 1 帧（降低内存与耗时）
+  video_max_frames: 600
+  on_missing_optional: warn            # warn | skip
+
+params:
+  c_Pb0: 0.0500        # mol/L  初始 Pb2+ 浓度（决定残余浓度与效率，务必填准）
+  c_I0: 0.1000         # mol/L  初始 I- 浓度（仅记录）
+  U_set: 2.10          # V      设定槽压
+  gap: 20.0            # mm     电极间距（用于估算单位面积欧姆压降）
+  T: 25.0              # degC   设定温度
+  V_solution_L: 0.50   # L      电解液体积（缺失则无法换算残余浓度）
+  z: 2                 # Pb2+ → Pb 的转移电子数
+
+cleaning:
+  sort_by_t: true
+  drop_duplicate_t: true
+  interpolate_nan: true
+  max_gap_s: 30.0      # 相邻有效点间隔超过该值时不做插值（不伪造长时间段数据）
+  outlier:
+    enable: true
+    window: 15
+    mad_k: 6.0         # 越大越宽松；超过 k×1.4826×MAD 记为离群
+    action: flag       # flag = 只标记不改数值（推荐，保留原始证据）
+  clip_negative: [I, kappa, area]
+  smooth:
+    enable: true
+    method: savgol     # savgol 比移动平均更能保住拐点位置
+    window: 11         # 奇数；越大越平滑但会让拐点更钝
+    polyorder: 3
+
+endpoint:
+  slope_window: 15         # dkappa/dt 的平滑窗口
+  flat_ratio: 0.10         # |dkappa/dt| < flat_ratio × max|dkappa/dt| 视为平坦
+  current_ratio: 0.10      # I < current_ratio × I_initial
+  area_stability: 0.05     # 尾段面积相对波动阈值（需图像分析）
+  stability_window: 5      # 需连续满足判据的采样点数
+  fallback_policy: charge_95   # charge_95 | final_sample | none
+
+efficiency:
+  enabled: true
+  m_real_g: null           # 有称重结果就填这里（最可信，单位 g）
+  c_pb_model: linear_kappa # 由电导率降幅推算浓度降幅
+  kappa_lin_coeff: 1.0     # Δc = kappa_lin_coeff × (κ0 − κt)；必须用滴定/称重标定
+  k_area_px_per_g: null    # 面积标定：每克铅对应多少 px²；未标定则面积只作相对量
+
+image:
+  enable: true
+  mode: hsv                # hsv | gray | none
+  hsv_lower: [0, 0, 180]   # 亮且低饱和 → 金属光泽沉积物
+  hsv_upper: [180, 90, 255]
+  gray_threshold: 127
+  invert: false
+  morph_open: 3            # 去噪点
+  morph_close: 3           # 补空洞
+  min_blob_area: 20        # 小于该面积的连通域视为噪声
+  roi: null                # [x0, y0, x1, y1] 只分析电极区域
+  time_base: uniform       # uniform（帧均匀铺在数据时间区间）| frame_index
+  smooth_window: 5
+
+predictor:
+  enable: true
+  input_csv: data/model_input.csv  # 多组实验的条件-目标表（组间建模）
+  target: T_cryst                  # 目标列名，例如析晶温度
+  features: null                   # null = 自动取除 target/id 外的数值列
+  model: both                      # linear | ridge | forest | both
+  cv: auto                         # auto（小样本自动 LOOCV）| loocv | kfold
+  kfold_splits: 5
+  random_state: 42
+  forest:
+    n_estimators: 300
+    max_depth: null
+    min_samples_leaf: 1
+  small_data_n: 30                 # 样本数低于此值 → 标记 preliminary 并强制 LOOCV
+
+output:
+  dir: outputs
+  run_name: null                   # 默认用时间戳，历史结果永不被覆盖
+  formats:
+    charts: [png]
+    data: [csv, json]
+    report: [html]                 # 需要 PDF 就加 pdf（需 weasyprint 或 pdfkit）
+  chart_dpi: 150
+  web_embed_images: true           # 图表以 base64 内嵌，报告单文件可分发
+  open_report: false
+
+ui:
+  title: 电解池处理含铅废液 · 数据分析
+  port: 8501
+  auto_demo_if_empty: true

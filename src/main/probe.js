@@ -67,7 +67,12 @@ class Probe {
       this.child = spawn(
         'powershell.exe',
         ['-Sta', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script],
-        { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, LGC_PID: String(process.pid) } }
+        {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+          // LGC_FAST：自检加速模式下让探针用更短的采样间隔
+          env: { ...process.env, LGC_PID: String(process.pid), LGC_FAST: process.env.SCI_TEST_FAST || '' },
+        }
       );
     } catch (e) {
       console.error('[probe] 启动失败:', e.message);
@@ -75,6 +80,9 @@ class Probe {
       return;
     }
     this.child.stdout.setEncoding('utf8');
+    // 探针被关掉/自己退出后再往 stdin 写会抛 EPIPE：必须挂上 error 处理，
+    // 否则这个异步错误会变成主进程未捕获异常（Electron 会弹出崩溃框）。
+    if (this.child.stdin) this.child.stdin.on('error', () => {});
     this.child.stdout.on('data', (chunk) => {
       this.buf += chunk;
       let idx;
@@ -83,7 +91,13 @@ class Probe {
         this.buf = this.buf.slice(idx + 1);
         if (!line) continue;
         try {
-          this.last = JSON.parse(line);
+          const parsed = JSON.parse(line);
+          // frozen：自检/诊断注入的画面状态不被真实采样覆盖（否则测试等一个动画就被冲掉）
+          if (this.frozen) {
+            this.ready = true;
+            continue;
+          }
+          this.last = parsed;
           this.ready = true;
           if (TEST_MODE) this.last = { ...NEUTRAL_LAST }; // 忽略真实桌面状态
         } catch (e) {
@@ -129,10 +143,8 @@ class Probe {
     });
   }
 
-  /**
-   * 给小岛窗口设置圆角命中区域：写入命令文件，探针子进程会在下一次循环中执行。
-   * 返回是否成功写入（探针是否存活）。
-   */
+  /** 给小岛窗口设置圆角命中区域：写入命令文件，探针子进程会在下一次循环中执行。
+      返回是否成功写入（探针是否存活）。 */
   setRegion(hwnd, x, y, w, h, r) {
     if (!this.child || this.child.killed) return false;
     try {
@@ -140,6 +152,15 @@ class Probe {
       return true;
     } catch (e) {
       return false;
+    }
+  }
+
+  /** 读回最近一次写入的区域命令内容（测试用） */
+  readRegionCommand() {
+    try {
+      return fs.readFileSync(REGION_FILE(), 'utf8').trim();
+    } catch (e) {
+      return '';
     }
   }
 
@@ -240,15 +261,21 @@ class Probe {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
-    if (this.child && !this.child.killed) {
-      try {
-        this.child.stdin.write('quit\n');
-      } catch (e) {
-        /* ignore */
-      }
-      setTimeout(() => {
-        if (this.child && !this.child.killed) this.child.kill();
-      }, 300);
+    const child = this.child;
+    this.child = null; // 先摘掉引用：exit 回调里不会再触发重启
+    if (!child) return;
+    // 先礼后兵：试着让它自己退出，然后立刻杀掉 —— 应用马上要退了，
+    // 不能等 300ms 定时器（那时进程已经结束，定时器永远不会跑，探针会变成孤儿占 CPU）。
+    try {
+      const stdin = child.stdin;
+      if (stdin && !stdin.destroyed && stdin.writable) stdin.write('quit\n');
+    } catch (e) {
+      /* EPIPE 等：忽略，下面照样 kill */
+    }
+    try {
+      if (!child.killed) child.kill();
+    } catch (e) {
+      /* ignore */
     }
   }
 }

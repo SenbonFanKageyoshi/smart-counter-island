@@ -218,7 +218,9 @@
       center: [devW / 2, devH / 2],
     };
     const cs = getComputedStyle(pill);
-    const radiusCss = Math.min(parseFloat(cs.borderRadius) || 0, Math.min(r.width, r.height) / 2);
+    const maxR = Math.min(r.width, r.height) / 2;
+    // 圆角取值必须避开 CSS 过渡的中间值（expanded 999px → zoom 42px），否则 SDF 退化成圆
+    const radiusCss = window.SCIRadius ? window.SCIRadius.settled(pill, maxR) : Math.min(parseFloat(cs.borderRadius) || 0, maxR);
     state.rect.radius = Math.max(1, radiusCss * scale);
     // 画布左上角在显示器物理像素坐标（CSS 像素 = DIP）
     state.origin = {
@@ -614,6 +616,7 @@
       appliedFps: state.stats.appliedFps || state.fps,
       tune: Object.assign({}, state.tune),
       opts: Object.assign({}, state.opts),
+      rectRadius: state.rect ? Math.round(state.rect.radius) : null,
     }),
     isActive: () => state.active,
     /** 主进程下发的窗口/显示器几何（DIP + 缩放） */

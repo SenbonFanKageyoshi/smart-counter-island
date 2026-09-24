@@ -9,25 +9,40 @@
 </head>
 <body>
 <div id="errbox" class="errbox" hidden></div>
-<header>
-  <div class="logo">⏳</div>
-  <div class="title">
+<header id="titlebar">
+    <div class="title">
     <h1>Smart Counter Island</h1>
     <p id="ver">配置</p>
   </div>
+  <div class="search-wrap">
+    <input type="text" id="setSearch" placeholder="搜索设置项（如 玻璃 / 天气 / 挖孔 / 盖板 / 时间表）" autocomplete="off">
+    <button type="button" id="setSearchClear" class="search-clear" title="清空" hidden>✕</button>
+  </div>
   <div id="toast" class="toast">已保存</div>
-  <button id="btn-close" class="btn close-btn" title="关闭">✕ 关闭</button>
+  <div class="win-btns">
+    <button id="btn-min" class="win-btn" title="最小化">–</button>
+    <button id="btn-close" class="win-btn close-btn" title="关闭">✕</button>
+  </div>
 </header>
 
 <nav id="tabs">
+  <div class="nav-cap">教学</div>
   <button class="tab active" data-tab="events">倒计时事件</button>
-  <button class="tab" data-tab="display">显示效果</button>
-  <button class="tab" data-tab="smart">智能行为</button>
-  <button class="tab" data-tab="schedule">时间表</button>
+  <button class="tab" data-tab="schedule">上课时间表</button>
   <button class="tab" data-tab="tasks">定时任务</button>
+  <button class="tab" data-tab="weather">天气</button>
+  <button class="tab" data-tab="holiday">节假日</button>
+  <div class="nav-cap">外观</div>
+  <button class="tab" data-tab="display">显示效果</button>
   <button class="tab" data-tab="wallpaper">壁纸</button>
+  <button class="tab" data-tab="pet">桌宠</button>
+  <div class="nav-cap">行为与系统</div>
+  <button class="tab" data-tab="smart">智能行为</button>
   <button class="tab" data-tab="advanced">高级</button>
   <button class="tab" data-tab="about">关于</button>
+  <div class="nav-foot">
+    <span id="navHint">改动即时生效</span>
+  </div>
 </nav>
 
 <main>
@@ -47,10 +62,16 @@
         <option value="auto">自动</option>
         <option value="capture">真实模糊</option>
         <option value="liquid">液态玻璃（CPU·兼容）</option>
+        <option value="liquid-ab">液态玻璃（色散版·边缘红蓝细边）</option>
         <option value="webgl">液态玻璃（GPU 加速·可调帧率）</option>
         <option value="fake">模拟玻璃</option>
         <option value="off">关闭</option>
       </select>
+      <div class="hint">
+        不确定选哪个？点右边「预览玻璃效果」——会开一个**玻璃实验室窗口**，用当前桌面截图并排渲染
+        「真实模糊 / 液态玻璃现状 / ＋边缘色散」，带滑块，满意可一键写回参数。
+      </div>
+      <button type="button" class="btn primary" id="btn-glass-lab">预览玻璃效果…</button>
     </div>
 
     <div class="field">
@@ -61,6 +82,87 @@
     <div class="field">
       <label>GPU 玻璃帧率（1–60）</label>
       <input type="number" id="gpuGlassFps" min="1" max="60" step="1">
+    </div>
+
+    <h3 class="group-title">传感器避让（摄像头位置留黑）</h3>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="notchEnabled"> 启用传感器避让</label>
+    </div>
+    <div class="field">
+      <label>传感器位置</label>
+      <select id="notchPreset">
+        <option value="center">中置传感器</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="notchDebug"> 显示传感器圆点与禁区虚线框（校准用）</label>
+      <p class="small">细条：内容在传感器左侧与右侧各一瓣；大卡片长到传感器下方。左右位置不变。</p>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="notchAdvShow"> 显示高级参数</label>
+    </div>
+    <div id="notch-adv" hidden>
+      <div class="field">
+        <label>传感器列表（一行一个：相对屏幕中心偏移, 距顶, 直径）</label>
+        <textarea id="notchSensors" rows="3" placeholder="0,12,34"></textarea>
+      </div>
+      <div class="field">
+        <label>禁区范围</label>
+        <select id="notchZoneMode">
+          <option value="auto">自动（传感器并集 + 空隙）</option>
+          <option value="manual">手动矩形</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>手动矩形（相对屏幕中心：X, Y, 宽, 高）</label>
+        <div class="pos-row">
+          <span class="pos-xy"><span>X</span><input type="number" id="notchZoneX" step="1"></span>
+          <span class="pos-xy"><span>Y</span><input type="number" id="notchZoneY" step="1"></span>
+          <span class="pos-xy"><span>W</span><input type="number" id="notchZoneW" min="1" step="1"></span>
+          <span class="pos-xy"><span>H</span><input type="number" id="notchZoneH" min="1" step="1"></span>
+        </div>
+      </div>
+      <div class="field">
+        <label>内容布局</label>
+        <select id="notchLayout">
+          <option value="auto">自动（够高就用下方布局）</option>
+          <option value="split">左右分栏（中间不放内容）</option>
+          <option value="below">退到禁区下方</option>
+          <option value="none">不处理</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>禁区外扩 / 左槽 / 右槽 / 下方空隙（px）</label>
+        <div class="pos-row">
+          <span class="pos-xy"><span>扩</span><input type="number" id="notchMargin" min="0" max="60" step="1"></span>
+          <span class="pos-xy"><span>左</span><input type="number" id="notchSlotLeft" min="0" max="200" step="1"></span>
+          <span class="pos-xy"><span>右</span><input type="number" id="notchSlotRight" min="0" max="200" step="1"></span>
+          <span class="pos-xy"><span>下</span><input type="number" id="notchSlotBelow" min="0" max="200" step="1"></span>
+        </div>
+      </div>
+      <div class="field">
+        <label>黑底圆角 / 伸缩时长（px, ms）</label>
+        <div class="pos-row">
+          <span class="pos-xy"><span>角</span><input type="number" id="notchRadius" min="0" max="80" step="1"></span>
+          <span class="pos-xy"><span>时长</span><input type="number" id="notchAnimMs" min="0" max="2000" step="10"></span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="group-title">传感器盖板内容（挖孔屏中间那块黑上显示什么）</h3>
+    <div class="field">
+      <label>自定义内容（留空＝不显示文字）</label>
+      <input type="text" id="coverText" placeholder="例：{name} 还有 {days}{unit}">
+      <div class="hint">
+        可用变量（点一下插入）：<span id="coverVars"></span>
+        <br>例：<code>{name} 还有 {days}{unit}</code> · <code>{time} {temp}° {weather}</code> · <code>距 {next} 还有 {min} 分</code>
+        <br>需要先在「传感器避让」里启用，才有那块盖板窗口；盖板宽度=禁区宽度（窄），太长会用省略号截断。
+        <br>写了文字就不再自动画天气 chip（想要天气就写 <code>{temp}°</code>）；想让天气自己上盖板 →「天气 → 天气位置 = 盖板上」。
+      </div>
+      <div class="pos-row" style="margin-top:6px">
+        <span class="pos-xy"><span>字号</span><input type="number" id="coverTextSize" min="9" max="18" step="1"></span>
+        <span class="hint" id="coverPreview"></span>
+      </div>
     </div>
 
     <div class="field">
@@ -133,6 +235,8 @@
         <span>灵动岛</span><input type="range" id="opStrip" min="0" max="100" step="1">
         <span>横幅</span><input type="range" id="opExpanded" min="0" max="100" step="1">
         <span>倒计时窗口</span><input type="range" id="opZoom" min="0" max="100" step="1">
+        <span>角落卡片</span><input type="range" id="opCorner" min="0" max="100" step="1">
+        <span>进度条</span><input type="range" id="opProgress" min="0" max="100" step="1">
       </div>
     </div>
     <div class="field">
@@ -177,14 +281,23 @@
       <label class="inline"><input type="checkbox" id="hideOnMaximized"> 窗口最大化时保持灵动岛</label>
     </div>
     <div class="field">
-      <label class="inline"><input type="checkbox" id="hideOnFullscreen"> 全屏时完全隐藏</label>
+      <label>全屏授课时（真全屏，不含最大化）</label>
+      <select id="fullscreenMode">
+        <option value="hide">完全隐藏</option>
+        <option value="progress">屏幕顶部进度条</option>
+        <option value="strip">保持灵动岛小条</option>
+      </select>
+    </div>
+    <div class="field" id="progressDaysRow">
+      <label>进度条总量（天）</label>
+      <input type="number" id="progressTotalDays" min="1" max="10000" step="1">
     </div>
     <div class="field">
-      <label>闲置多少秒后展开横幅</label>
+      <label>闲置多少秒后放大到大窗口</label>
       <input type="number" id="expandIdleSec" min="0" max="120" step="1">
     </div>
     <div class="field">
-      <label>横幅展开后再闲置多少秒弹出大屏（0 = 不自动）</label>
+      <label>自动放大再等多少秒（取两者较大值；0 = 只用上面那个）</label>
       <input type="number" id="zoomIdleSec" min="0" max="3600" step="1">
     </div>
     <div class="field">
@@ -203,6 +316,7 @@
         <label><input type="radio" name="manualMode" value="auto"> 自动</label>
         <label><input type="radio" name="manualMode" value="pinned"> 固定显示</label>
         <label><input type="radio" name="manualMode" value="zoom"> 大窗口驻留</label>
+        <label><input type="radio" name="manualMode" value="dock"> 计时坞（黑底白字·效果同通知）</label>
         <label><input type="radio" name="manualMode" value="hidden"> 隐藏成灵动岛</label>
       </div>
     </div>
@@ -217,7 +331,65 @@
       <label>几周一休（0 = 每周相同）</label>
       <input type="number" id="restEveryWeeks" min="0" max="8" step="1">
     </div>
+    <div class="field">
+      <div class="pos-row">
+        <button class="btn" id="schedQuickFill">⏱ 快速排课</button>
+        <button class="btn" id="schedExport">⇩ 导出</button>
+        <button class="btn" id="schedImport">⇪ 导入</button>
+      </div>
+      <p class="small" id="schedPreview"></p>
+    </div>
+    <div class="field" id="schedQuickBox" hidden>
+      <label>快速排课</label>
+      <div class="pos-row">
+        <span class="small">第 1 节</span><input type="time" id="qfStart" value="08:00">
+        <span class="small">每节</span><input type="number" id="qfLen" min="10" max="120" step="5" value="45">
+        <span class="small">分 · 课间</span><input type="number" id="qfBreak" min="0" max="60" step="5" value="10">
+        <span class="small">分 · 共</span><input type="number" id="qfCount" min="1" max="20" step="1" value="8">
+        <span class="small">节</span>
+      </div>
+      <div class="pos-row" style="margin-top:8px">
+        <label class="inline"><input type="checkbox" id="qfWeekdays" checked> 只填工作日（周一~周五）</label>
+        <button class="btn primary" id="qfApply">生成到第 1 周</button>
+      </div>
+    </div>
+    <div class="field" id="schedIoBox" hidden>
+      <label id="schedIoLabel">时间表 JSON</label>
+      <textarea id="schedIo" rows="8" placeholder="导出后复制这段 JSON 分享给同事；粘贴别人的 JSON 后点「导入」"></textarea>
+      <div class="pos-row" style="margin-top:8px">
+        <button class="btn primary" id="schedIoApply">导入</button>
+        <button class="btn" id="schedIoCopy">复制</button>
+        <button class="btn" id="schedIoClose">关闭</button>
+      </div>
+    </div>
     <div id="schedule-list"></div>
+
+    <h3 class="sec-title">课堂提醒（按上面的时间表自动弹）</h3>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="classNotifyEnabled"> 启用课堂提醒</label>
+    </div>
+    <div class="field">
+      <label>课前提醒（分钟，0 = 关）</label>
+      <input type="number" id="classBeforeStart" min="0" max="30" step="1">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="classAtStart"> 上课提醒</label>
+    </div>
+    <div class="field">
+      <label>下课前提醒（分钟，0 = 关）</label>
+      <input type="number" id="classBeforeEnd" min="0" max="30" step="1">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="classAtEnd"> 下课提醒</label>
+    </div>
+    <div class="field">
+      <label>提醒文案（可用 {min} 分钟 / {n} 节次 / {subject} 科目 / {label} 节次+科目）</label>
+      <input type="text" id="classTplStart" placeholder="还有 {min} 分钟上课 · {label}">
+      <input type="text" id="classTplAtStart" placeholder="上课时间到 · {label}" style="margin-top:6px">
+      <input type="text" id="classTplBeforeEnd" placeholder="还有 {min} 分钟下课" style="margin-top:6px">
+      <input type="text" id="classTplAtEnd" placeholder="下课时间到" style="margin-top:6px">
+      <p class="small" id="classTplPreview"></p>
+    </div>
   </section>
 
   <!-- ============ 定时任务 ============ -->
@@ -247,6 +419,115 @@
       </div>
     </div>
     <div id="task-list"></div>
+  </section>
+
+  <!-- ============ 天气 ============ -->
+  <section id="tab-holiday" class="tabpage">
+    <h3 class="group-title">节假日倒计时（计时坞）</h3>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="hdEnabled"> 启用节假日倒计时</label>
+      <div class="hint">开启后：距离下一个节假日进入下面的天数窗口时，小岛自动变成**计时坞**形态（黑底白字，效果同通知窗口）。</div>
+    </div>
+    <div class="field">
+      <label>还剩多少天开始倒计时（0 = 一直显示）</label>
+      <input type="number" id="hdLeadDays" min="0" max="3650" step="1">
+    </div>
+    <div class="field">
+      <label>节假日列表（农历节日按当年公历日期添加）</label>
+      <div class="task-add-row">
+        <input type="text" id="hdName" placeholder="名称，如 春节">
+        <input type="date" id="hdDate">
+        <button type="button" class="btn primary" id="btn-hd-add">＋ 添加</button>
+      </div>
+      <div id="hd-list" class="event-list" style="margin-top:10px"></div>
+      <div class="hint" id="hd-next"></div>
+    </div>
+  </section>
+
+  <section id="tab-weather" class="tabpage">
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wxEnabled"> 启用天气预报（Open-Meteo，免密钥）</label>
+      <div class="hint" id="wx-status">未启用</div>
+    </div>
+
+    <div class="field">
+      <label>城市（自动查经纬度并缓存）</label>
+      <div class="task-add-row">
+        <input type="text" id="wxCity" placeholder="如：郑州 / Zhengzhou">
+        <button id="btn-wx-resolve" class="btn">解析城市</button>
+        <button id="btn-wx-locate" class="btn">自动定位</button>
+        <button id="btn-wx-refresh" class="btn primary">立即刷新</button>
+      </div>
+      <div class="hint" id="wx-resolve">改完城市点「解析城市」确认一下；确认后再看岛上的天气</div>
+    </div>
+
+    <div class="field"><label>刷新间隔（分钟，最小 10；断网时自动退避到 3 倍）</label>
+      <input type="number" id="wxRefresh" min="10" max="720" step="5" value="30"></div>
+
+    <div class="field"><label>温度单位</label>
+      <select id="wxUnit">
+        <option value="c">摄氏 ℃</option>
+        <option value="f">华氏 ℉</option>
+      </select></div>
+
+    <div class="field"><label>岛内显示</label>
+      <select id="wxShow">
+        <option value="always">常驻（细条 / 横幅 / 大卡片都显示）</option>
+        <option value="banner">仅横幅 / 大卡片（细条保持极简）</option>
+        <option value="off">不显示（只用提醒）</option>
+      </select></div>
+
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="wxAnim"> 天气动画（图标动画 + 提醒时整条岛特效）</label>
+    </div>
+
+    <div class="field"><label>天气位置（细条上放哪儿）</label>
+      <select id="wxPos">
+        <option value="right">右端（默认）</option>
+        <option value="left">左端</option>
+        <option value="cover">盖板上（中间的传感器窗口）</option>
+      </select>
+      <div class="hint">「盖板上」= 把天气画在中间那块传感器盖板窗口上（不会侵入禁区，但会与摄像头区域重叠，摄像头不用时再选）。
+        <br>盖板上还想显示文字/变量 →「显示效果 → 传感器盖板内容」。</div>
+    </div>
+
+    <div class="field"><label>动画强度（0 = 静止，100 = 默认）</label>
+      <input type="number" id="wxIntensity" min="0" max="200" step="10" value="100"></div>
+
+    <div class="field"><label>高温提醒阈值（℃，最高温达到就提醒）</label>
+      <input type="number" id="wxHot" min="0" max="50" step="1" value="35"></div>
+
+    <div class="field"><label>降温提醒阈值（明天最高温比今天低多少度就提醒添衣）</label>
+      <input type="number" id="wxDrop" min="0" max="30" step="1" value="8"></div>
+
+    <div class="field"><label>降雨提醒前瞻（小时）</label>
+      <input type="number" id="wxAhead" min="1" max="24" step="1" value="6"></div>
+
+    <div class="field"><label>关键词红色高亮（逗号分隔）</label>
+      <input type="text" id="wxKeywords" placeholder="雨,雪,大风,降温,高温"></div>
+
+    <h3 class="sec-title">指定时间天气提醒</h3>
+    <div class="task-add">
+      <div class="task-add-row">
+        <select id="wxRuleKind">
+          <option value="today">今日概况</option>
+          <option value="tomorrow">明日预报</option>
+          <option value="now">当前天气</option>
+          <option value="rain">降雨提醒</option>
+          <option value="temp">降温 / 高温提醒</option>
+        </select>
+        <input type="time" id="wxRuleTime" value="07:00">
+        <select id="wxRuleDays">
+          <option value="daily">每天</option>
+          <option value="once">仅一次</option>
+          <option value="1,2,3,4,5">工作日</option>
+        </select>
+        <button id="btn-add-wx-rule" class="btn primary">＋ 添加</button>
+        <button id="btn-wx-test" class="btn">试一条</button>
+      </div>
+      <div class="hint" id="wx-test-note">「试一条」会立刻按上面的类型弹一条示例，用来确认文案与动画效果</div>
+    </div>
+    <div id="wx-rules"></div>
   </section>
 
   <!-- ============ 壁纸 ============ -->
@@ -351,6 +632,94 @@
     </div>
   </section>
 
+  <!-- ============ 桌宠 ============ -->
+  <section id="tab-pet" class="tabpage">
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petEnabled"> 启用桌宠（课间互动 / 提醒上课 / 答疑）</label>
+    </div>
+    <div class="field">
+      <label>大小（%）</label>
+      <input type="number" id="petScale" min="50" max="200" step="5">
+    </div>
+    <div class="field">
+      <label>走动速度（%）</label>
+      <input type="number" id="petSpeed" min="20" max="400" step="10">
+    </div>
+    <div class="field">
+      <label>透明度（%）</label>
+      <input type="number" id="petOpacity" min="20" max="100" step="5">
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petHideFullscreen"> 全屏授课时隐藏</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petQuietClass"> 上课时间静默（只答课表与倒计时）</label>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petAnnounceClass"> 上课/下课提醒时桌宠也念一遍</label>
+    </div>
+
+    <h3 class="sec-title">素材包（桌宠形象）</h3>
+    <div class="field">
+      <label>素材包目录（里面要有 pet.json；留空 = 程序数据目录下的 pets\示例）</label>
+      <div class="pos-row">
+        <input type="text" id="petPack" placeholder="留空 = 默认目录" style="flex:1">
+        <button class="btn" id="petPackOpen">打开文件夹</button>
+        <button class="btn" id="petPackPick">浏览…</button>
+      </div>
+      <div class="pos-row" style="margin-top:8px">
+        <button class="btn" id="petPackSample">生成示例素材包</button>
+        <button class="btn" id="petPackReload">重新加载</button>
+      </div>
+      <p class="small" id="petPackStatus"></p>
+    </div>
+
+    <h3 class="sec-title">答疑（AI）</h3>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petAiEnabled"> 启用 AI 答疑</label>
+    </div>
+    <div class="field">
+      <label>接口地址（OpenAI 兼容）</label>
+      <input type="text" id="petAiBase" placeholder="https://api.deepseek.com">
+    </div>
+    <div class="field">
+      <label>模型（非思考档，勿填 reasoner）</label>
+      <input type="text" id="petAiModel" placeholder="deepseek-chat">
+      <p class="small" id="petAiModelWarn"></p>
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <input type="text" id="petAiKey" placeholder="sk-…">
+    </div>
+    <div class="field">
+      <label>班级要求（追加到系统提示，可留空）</label>
+      <input type="text" id="petAiPersona" placeholder="例如：多鼓励、少用网络梗、用初中生能懂的话">
+    </div>
+    <div class="field">
+      <label>每分钟 / 每天 提问上限</label>
+      <div class="pos-row">
+        <input type="number" id="petAiPerMin" min="1" max="60" step="1">
+        <input type="number" id="petAiPerDay" min="1" max="2000" step="10">
+        <input type="number" id="petAiMaxChars" min="30" max="400" step="10" title="回答字数上限">
+      </div>
+    </div>
+    <div class="field">
+      <label class="inline"><input type="checkbox" id="petAiPresetOnly"> 只用预置问答，不联网</label>
+    </div>
+    <div class="field">
+      <div class="pos-row">
+        <button class="btn" id="petCheck">连接自检</button>
+        <button class="btn" id="petSayTest">让它说一句</button>
+      </div>
+      <p class="small" id="petStatus"></p>
+    </div>
+
+    <h3 class="sec-title">预置问答（离线也能答，一行一条：问 | 答）</h3>
+    <div class="field">
+      <textarea id="petQa" rows="6" placeholder="作业交到哪 | 交给课代表，放讲台左边&#10;值日怎么排 | 贴在后墙，按学号轮"></textarea>
+    </div>
+  </section>
+
   <!-- ============ 高级 ============ -->
   <section id="tab-advanced" class="tabpage">
     <div class="field">
@@ -393,8 +762,7 @@
   <!-- ============ 关于 ============ -->
   <section id="tab-about" class="tabpage">
     <div class="about-box">
-      <div class="about-logo">⏳</div>
-      <h2>Smart Counter Island</h2>
+            <h2>Smart Counter Island</h2>
       <p id="about-ver"></p>
       <ul>
         <li>小岛：单击收起 · 双击配置 · 按住下拖放大 / 上拖收起</li>
