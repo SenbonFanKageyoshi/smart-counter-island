@@ -80,8 +80,12 @@ function bindHolidays() {
       const btn = e.target.closest('button[data-hd-del]');
       if (!btn) return;
       const i = parseInt(btn.dataset.hdDel, 10);
-      const items = (((S && S.holidays && S.holidays.items) || []).filter((_, idx) => idx !== i));
-      patch({ holidays: { items } });
+      const before = (((S && S.holidays && S.holidays.items) || [])).slice();
+      const items = before.filter((_, idx) => idx !== i);
+      patch({ holidays: { items } }, { silent: true });
+      toastUndo(`已删除「${(before[i] && before[i].name) || '节假日'}」`, () =>
+        patch({ holidays: { items: before } }, { silent: true })
+      );
     });
   }
 }
@@ -192,16 +196,53 @@ function bindHolidays() {
 
 function toast(msg) {
   const t = $('#toast');
+  t.classList.remove('undoable');
   t.textContent = msg || '已保存';
   t.classList.add('show');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.remove('show'), 1200);
 }
 
-/** 局部更新（主进程深合并 + 立即生效） */
-async function patch(p) {
+/* 可撤销提示：删除/整体覆盖类操作后，5 秒内可点「撤销」还原。
+   人因研究：对破坏性操作，「可撤销」优于「确认弹窗」—— 不打断流程，误删也救得回来。
+   注意要清掉 toast() 的普通提示时序，并把 pointer-events 打开（见 .toast.undoable）。 */
+let undoFn = null;
+
+function toastUndo(msg, undo) {
+  const t = $('#toast');
+  t.textContent = '';
+  const span = document.createElement('span');
+  span.textContent = msg;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-undo';
+  btn.textContent = '撤销';
+  btn.addEventListener('click', () => {
+    clearTimeout(toast._t);
+    t.classList.remove('show', 'undoable');
+    const fn = undoFn;
+    undoFn = null;
+    if (!fn) return;
+    Promise.resolve()
+      .then(fn)
+      .then(() => toast('已撤销'))
+      .catch(() => toast('撤销失败'));
+  });
+  t.appendChild(span);
+  t.appendChild(btn);
+  t.classList.add('show', 'undoable');
+  clearTimeout(toast._t);
+  undoFn = undo;
+  toast._t = setTimeout(() => {
+    t.classList.remove('show', 'undoable');
+    undoFn = null;
+  }, 5000);
+}
+
+/** 局部更新（主进程深合并 + 立即生效）；opts.silent = 不弹「已保存」（改由 toastUndo 接管提示） */
+async function patch(p, opts) {
   S = await window.config.update(p);
-  toast();
+  if (!opts || opts.silent !== true) toast();
 }
 
 /** 开机自启：勾选框按注册表真实状态显示（而不是设置里的期望值） */
@@ -311,6 +352,7 @@ async function init() {
   $('#smartEnabled').checked = !!S.smart.enabled;
   $('#notifyEnabled').checked = S.smart.notifyEnabled !== false;
   $('#notifyShowSec').value = S.smart.notifyShowSec ?? 8;
+  $('#notifyMinGapSec').value = S.smart.notifyMinGapSec ?? 5;
   $('#hideOnMaximized').checked = S.smart.hideOnMaximized !== false;
   $('#fullscreenMode').value = ['corner', 'progress', 'strip'].includes(S.smart.fullscreenMode) ? S.smart.fullscreenMode : 'hide';
   $('#progressTotalDays').value = typeof S.smart.progressTotalDays === 'number' ? S.smart.progressTotalDays : 365;
@@ -326,7 +368,10 @@ async function init() {
   $('#notifyShake').checked = S.smart.notifyShake !== false;
   $('#bgRefreshSec').value = S.smart.bgRefreshSec ?? 1.6;
   $('#hoverMargin').value = S.smart.hoverMargin ?? 30;
-  const mm = document.querySelector(`input[name="manualMode"][value="${S.manual.mode}"]`);
+  // 手动模式：'dock' 已不再是可常驻模式（计时坞由长按灵动岛打开），这里兜底回落到「自动」，
+  // 避免设置里残留旧值导致单选项一个都不选中。
+  const modeForUi = S.manual && S.manual.mode === 'dock' ? 'auto' : (S.manual || {}).mode;
+  const mm = document.querySelector(`input[name="manualMode"][value="${modeForUi}"]`);
   if (mm) mm.checked = true;
 
   // 时间表
@@ -379,7 +424,7 @@ async function init() {
   $('#wxRefresh').value = typeof wxCfg.refreshMin === 'number' ? wxCfg.refreshMin : 30;
   $('#wxUnit').value = wxCfg.unit === 'f' ? 'f' : 'c';
   $('#wxShow').value = wxCfg.showInIsland || 'always';
-  $('#wxPos').value = wxCfg.pos === 'left' || wxCfg.pos === 'cover' ? wxCfg.pos : 'right';
+  // 天气位置已固定为「盖板上」，不再有细条位置可选（见 config.html 的说明）
   $('#wxAnim').checked = wxCfg.anim !== false;
   $('#wxIntensity').value = typeof wxCfg.animIntensity === 'number' ? wxCfg.animIntensity : 100;
   $('#wxHot').value = typeof wxCfg.hotC === 'number' ? wxCfg.hotC : 35;
@@ -592,12 +637,18 @@ $('#schedule-list').addEventListener('click', (e) => {
   const copyAll = e.target.closest('.sched-copy-all');
   if (copyAll) {
     const cycle = S.schedule.cycleWeeks;
+    // 这是**整体覆盖**（第 2 周起全被第 1 周替换），先留一份原样供撤销
+    const before = JSON.parse(JSON.stringify(S.schedule.weeks || []));
     for (let wi = 1; wi < cycle; wi++) {
       S.schedule.weeks[wi] = S.schedule.weeks[0].map((d) => ({ periods: (d.periods || []).map((p) => ({ ...p })) }));
     }
     renderSchedule();
     saveScheduleNow();
-    toast('已复制第 1 周到所有周');
+    toastUndo('已用第 1 周覆盖其余各周', () => {
+      S.schedule.weeks = before;
+      renderSchedule();
+      saveScheduleNow();
+    });
     return;
   }
   // 复制模式开关（再点源按钮 = 取消）
@@ -633,9 +684,15 @@ $('#schedule-list').addEventListener('click', (e) => {
     const wi = parseInt(row.dataset.wi, 10);
     const di = parseInt(row.dataset.di, 10);
     const pi = parseInt(row.dataset.pi, 10);
-    S.schedule.weeks[wi][di].periods.splice(pi, 1);
+    // 可撤销：课表是手工录入的数据，误点代价高；但用确认弹窗会在连续排课时反复打断。
+    const removed = S.schedule.weeks[wi][di].periods.splice(pi, 1)[0];
     renderSchedule();
     saveScheduleNow();
+    toastUndo('已删除这节课', () => {
+      S.schedule.weeks[wi][di].periods.splice(Math.max(0, pi), 0, removed);
+      renderSchedule();
+      saveScheduleNow();
+    });
     return;
   }
 });
@@ -712,12 +769,21 @@ $('#schedIoApply').addEventListener('click', () => {
   try {
     const obj = JSON.parse($('#schedIo').value || '{}');
     if (!obj || !Array.isArray(obj.weeks)) throw new Error('缺少 weeks 字段');
+    // 导入是**整体替换**（非增量合并），先留一份原课表与开关状态供撤销
+    const before = JSON.parse(JSON.stringify(S.schedule || {}));
+    const enabledBefore = $('#scheduleEnabled') ? $('#scheduleEnabled').checked : null;
     S.schedule = normSchedule({ ...S.schedule, ...obj, weeks: obj.weeks });
     if (obj.enabled != null) $('#scheduleEnabled').checked = !!obj.enabled;
     renderSchedule();
     saveScheduleNow();
     updateSchedPreview();
-    toast('时间表已导入');
+    toastUndo('时间表已导入（覆盖原课表）', () => {
+      S.schedule = before;
+      if (enabledBefore != null) $('#scheduleEnabled').checked = enabledBefore;
+      renderSchedule();
+      saveScheduleNow();
+      updateSchedPreview();
+    });
   } catch (e) {
     toast('导入失败：' + (e && e.message ? e.message : '格式不对'));
   }
@@ -809,15 +875,26 @@ $('#task-list').addEventListener('click', async (e) => {
   const list = (S.tasks || []).slice();
   const i = list.findIndex((t) => t.id === id);
   if (i < 0) return;
+  let removedTask = null;
   if (btn.dataset.act === 'toggle') {
     list[i] = { ...list[i], enabled: list[i].enabled === false };
   } else if (btn.dataset.act === 'del') {
+    removedTask = list[i];
     list.splice(i, 1);
   } else {
     return;
   }
   S = await window.config.update({ tasks: list });
   renderTasks();
+  if (removedTask) {
+    const at = i;
+    toastUndo(`已删除任务「${removedTask.name || removedTask.title || '定时任务'}」`, async () => {
+      const cur = (S.tasks || []).slice();
+      cur.splice(Math.max(0, at), 0, removedTask);
+      S = await window.config.update({ tasks: cur });
+      renderTasks();
+    });
+  }
 });
 
 $('#btn-add-task').addEventListener('click', async () => {
@@ -914,12 +991,25 @@ $('#wx-rules').addEventListener('click', async (e) => {
   const list = ((S.weather && S.weather.reminders) || []).slice();
   const i = list.findIndex((r) => r.id === id);
   if (i < 0) return;
+  let removedRule = null;
   if (btn.dataset.act === 'toggle') list[i] = { ...list[i], enabled: list[i].enabled === false };
-  else if (btn.dataset.act === 'del') list.splice(i, 1);
-  else return;
+  else if (btn.dataset.act === 'del') {
+    removedRule = list[i];
+    list.splice(i, 1);
+  } else return;
   S = await window.config.update({ weather: { reminders: list } });
   renderWxRules();
   refreshWxStatus();
+  if (removedRule) {
+    const at = i;
+    toastUndo('已删除这条天气提醒', async () => {
+      const cur = ((S.weather && S.weather.reminders) || []).slice();
+      cur.splice(Math.max(0, at), 0, removedRule);
+      S = await window.config.update({ weather: { reminders: cur } });
+      renderWxRules();
+      refreshWxStatus();
+    });
+  }
 });
 
 $('#btn-add-wx-rule').addEventListener('click', async () => {
@@ -1041,11 +1131,20 @@ $('#event-list').addEventListener('click', async (e) => {
     renderEvents();
     toast();
   } else if (btn.dataset.act === 'del') {
-    if (!confirm(`确定删除「${ev.name}」吗？`)) return;
-    await window.config.events.remove(id);
-    S = (await window.config.get()).settings;
+    // 可撤销删除：替代原来的阻断式 confirm —— 撤销既少打断流程，误删也救得回来。
+    const before = (S.events || []).slice();
+    const idx = before.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const removed = before[idx];
+    const after = before.filter((x) => x.id !== id);
+    S = await window.config.update({ events: after });
     renderEvents();
-    toast('已删除');
+    toastUndo(`已删除「${removed.name || '事件'}」`, async () => {
+      const cur = (S.events || []).slice();
+      cur.splice(Math.max(0, idx), 0, removed); // 插回原来的位置，不改变其它事件顺序
+      S = await window.config.update({ events: cur });
+      renderEvents();
+    });
   } else if (btn.dataset.act === 'edit') {
     openEditor(ev);
   } else if (btn.dataset.act === 'pin') {
@@ -1144,6 +1243,7 @@ bind('#showPast', (el) => ({ ui: { showPast: el.checked } }));
 bind('#smartEnabled', (el) => ({ smart: { enabled: el.checked } }));
 bind('#notifyEnabled', (el) => ({ smart: { notifyEnabled: el.checked } }));
 bind('#notifyShowSec', (el) => ({ smart: { notifyShowSec: Math.max(2, parseInt(el.value, 10) || 8) } }));
+bind('#notifyMinGapSec', (el) => ({ smart: { notifyMinGapSec: Math.max(0, Math.min(120, parseInt(el.value, 10) || 0)) } }));
 bind('#hideOnMaximized', (el) => ({ smart: { hideOnMaximized: el.checked } }));
 bind('#fullscreenMode', (el) => {
   $('#progressDaysRow').hidden = el.value !== 'progress';
@@ -1466,7 +1566,7 @@ bind('#wxCity', (el) => ({ weather: { city: el.value.trim(), lat: null, lon: nul
 bind('#wxRefresh', (el) => ({ weather: { refreshMin: Math.max(10, Math.min(720, parseInt(el.value, 10) || 30)) } }));
 bind('#wxUnit', (el) => ({ weather: { unit: el.value === 'f' ? 'f' : 'c' } }));
 bind('#wxShow', (el) => ({ weather: { showInIsland: ['banner', 'always', 'off'].includes(el.value) ? el.value : 'always' } }));
-bind('#wxPos', (el) => ({ weather: { pos: ['left', 'right', 'cover'].includes(el.value) ? el.value : 'right' } }));
+// 天气位置固定为盖板，不再绑定 pos
 bind('#wxAnim', (el) => ({ weather: { anim: el.checked } }));
 bind('#wxIntensity', (el) => ({ weather: { animIntensity: Math.max(0, Math.min(200, parseInt(el.value, 10) || 0)) } }));
 bind('#wxHot', (el) => ({ weather: { hotC: Math.max(0, Math.min(50, parseInt(el.value, 10) || 35)) } }));

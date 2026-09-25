@@ -116,7 +116,7 @@ class Pet {
     const defY = Math.round(wa.y + wa.height - c.stage.h - 8);
     const x = Number.isFinite(c.pos.x) ? Math.max(wa.x - c.stage.w + 80, Math.min(c.pos.x, wa.x + wa.width - 80)) : defX;
     const y = Number.isFinite(c.pos.y) ? Math.max(wa.y, Math.min(c.pos.y, wa.y + wa.height - 60)) : defY;
-    const win = new BrowserWindow({
+    const win = require('./quiet').quiet(new BrowserWindow({
       width: c.stage.w,
       height: c.stage.h,
       x,
@@ -138,7 +138,7 @@ class Pet {
         sandbox: true,
         backgroundThrottling: false,
       },
-    });
+    }));
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setIgnoreMouseEvents(true, { forward: true }); // 默认穿透，指针落在桌宠身上才可点
     win.loadFile(path.join(__dirname, '..', 'renderer', 'pet', 'index.html'));

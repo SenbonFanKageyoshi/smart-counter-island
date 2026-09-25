@@ -1,5 +1,5 @@
 'use strict';
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, screen } = require('electron');
 const path = require('path');
 const settings = require('./settings');
 const island = require('./island');
@@ -10,6 +10,26 @@ let opening = false; // 防止并发 open() 产生多个窗口
 
 function preload() {
   return path.join(__dirname, '..', 'preload', 'config-preload.js');
+}
+
+/** 配置窗口的理想尺寸（900×820）与最小值（660×560）。
+    必须按**屏幕工作区**裁剪：1366×768 这类屏的工作区只有约 728 高，
+    硬编码 820 会让窗口底部跑到屏幕外，最下面的设置项永远够不到。 */
+function windowSize() {
+  let wa = { width: 1280, height: 800 };
+  try {
+    wa = screen.getPrimaryDisplay().workAreaSize;
+  } catch (e) {
+    /* 取不到就用保守默认值 */
+  }
+  const width = Math.min(900, Math.max(480, wa.width - 60));
+  const height = Math.min(820, Math.max(420, wa.height - 60));
+  return {
+    width,
+    height,
+    minWidth: Math.min(660, width),
+    minHeight: Math.min(560, height),
+  };
 }
 
 function open() {
@@ -23,11 +43,8 @@ function open() {
   if (opening) return; // 正在创建中，忽略重复请求
   opening = true;
   loaded = false;
-  win = new BrowserWindow({
-    width: 900,
-    height: 820,
-    minWidth: 660,
-    minHeight: 560,
+  win = require('./quiet').quiet(new BrowserWindow({
+    ...windowSize(),
     title: 'Smart Counter Island · 配置',
     // 无边框 + Win11 亚克力：窗口背后的真实桌面被系统模糊/提色 = 真液态玻璃底
     // （Win10 或不支持时 setBackgroundMaterial 会抛错，CSS 自带深色玻璃兜底）
@@ -45,7 +62,7 @@ function open() {
       sandbox: true,
       backgroundThrottling: false,
     },
-  });
+  }));
   try {
     win.setBackgroundMaterial('acrylic');
   } catch (e) {

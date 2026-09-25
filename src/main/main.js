@@ -398,6 +398,32 @@ async function runDiagPress() {
     await sleep(1400);
     const after = await w.webContents.executeJavaScript(`(() => ({ dbg: window.__pressDbg ? window.__pressDbg() : null, state: document.body.dataset.state, dockEdit: !!document.querySelector('.dk-chip') }))()`);
     log(`[diag-press] 松手后：${JSON.stringify(after)} island.state=${island.state} mode=${settings.load().manual.mode}`);
+    // 创建页（对数刻度）快照 + 截图
+    try {
+      const pick = await w.webContents.executeJavaScript(`(() => {
+        const r = document.getElementById('dk-ruler');
+        const rb = r ? r.getBoundingClientRect() : null;
+        const ticks = Array.from(document.querySelectorAll('.dk-tick'));
+        const xs = ticks.map((t) => Math.round(t.getBoundingClientRect().left - (rb ? rb.left : 0)));
+        const needle = document.querySelector('.dk-ruler-needle');
+        return {
+          rulerW: r ? Math.round(r.clientWidth) : -1,
+          ticks: ticks.length,
+          tickXFrom: xs.length ? Math.min.apply(null, xs) : -1,
+          tickXTo: xs.length ? Math.max.apply(null, xs) : -1,
+          needleX: needle && rb ? Math.round(needle.getBoundingClientRect().left + needle.getBoundingClientRect().width / 2 - rb.left) : -1,
+          label: (document.getElementById('dk-pick-label') || {}).textContent || '',
+          btns: Array.from(document.querySelectorAll('.dk-chip, .dk-big')).map((c) => c.textContent.trim() + ':' + (c.dataset.act || '')),
+        };
+      })()`);
+      log(`[diag-press] 创建页：${JSON.stringify(pick)}`);
+      const sd = app.isPackaged ? path.join(app.getPath('temp'), 'sci-shots') : path.join(__dirname, '..', '..', 'shots');
+      fs.mkdirSync(sd, { recursive: true });
+      fs.writeFileSync(path.join(sd, 'dock-picker.png'), (await w.webContents.capturePage()).toPNG());
+      log('[diag-press] 创建页截图 → dock-picker.png');
+    } catch (e) {
+      log(`[diag-press] 创建页快照失败 ${e && e.message}`);
+    }
   } catch (e) {
     log(`[diag-press] ERROR ${e && e.stack ? e.stack : e}`);
   }
@@ -408,7 +434,7 @@ async function runDiagPress() {
     island.onAction({ type: 'dockMenu' });
     await sleep(1100);
     const menu = await island.win.webContents.executeJavaScript(`(() => {
-      const chips = Array.from(document.querySelectorAll('.dk-chip'));
+      const chips = Array.from(document.querySelectorAll('.dk-chip, .dk-big'));
       return { state: document.body.dataset.state, chips: chips.map((c) => c.textContent.trim()), title: (document.querySelector('.dk-title') || {}).textContent || '', num: (document.querySelector('[data-dock-num]') || {}).textContent || '' };
     })()`);
     log(`[diag-press] 操作页：${JSON.stringify(menu)}`);
@@ -427,6 +453,25 @@ async function runDiagPress() {
     log(`[diag-press] 截图 → ${path.join(shotDir, 'dock.png')}`);
   } catch (e) {
     log(`[diag-press] 截图失败 ${e && e.message}`);
+  }
+  // 开始短时倒计时（10 分钟）→ 收起计时坞，岛左秒表 + 右剩余
+  try {
+    island.onAction({ type: 'timerStart', ms: 10 * 60 * 1000 });
+    await sleep(1600);
+    const tinfo = await island.win.webContents.executeJavaScript(`(() => ({
+      state: document.body.dataset.state,
+      watch: !!document.querySelector('.s-watch svg'),
+      watchColor: document.querySelector('.s-watch') ? getComputedStyle(document.querySelector('.s-watch')).color : '',
+      num: (document.querySelector('[data-timer-num]') || {}).textContent || '',
+      cover: true,
+    }))()`);
+    const timer = island.timerPayload();
+    log(`[diag-press] 计时中：${JSON.stringify(tinfo)} timer=${JSON.stringify(timer)}`);
+    const sd2 = app.isPackaged ? path.join(app.getPath('temp'), 'sci-shots') : path.join(__dirname, '..', '..', 'shots');
+    fs.writeFileSync(path.join(sd2, 'dock-timer.png'), (await island.win.webContents.capturePage()).toPNG());
+    log('[diag-press] 计时岛截图 → dock-timer.png');
+  } catch (e) {
+    log(`[diag-press] 计时测试失败 ${e && e.message}`);
   }
   log('[diag-press] done');
   app.exit(0);
@@ -1543,6 +1588,11 @@ function registerIpc() {
     island.setNotifySize(size);
   });
 
+  // 细条/横幅宽度自适应：渲染器按左右两瓣的真实文字宽度测量后上报
+  ipcMain.on('island:strip-size', (_e, size) => {
+    if (size) island.setStripSize(size.l, size.r);
+  });
+
   // 倒计时窗口宽度自适应：渲染器按文字内容测量后上报
   ipcMain.on('island:zoom-width', (_e, w) => {
     island.setZoomWidth(w);
@@ -1726,6 +1776,11 @@ function registerIpc() {
   // 长按盖板（传感器那块黑胶囊）→ 与长按灵动岛同一个动作
   ipcMain.handle('cover:longpress', () => {
     if (island && island.onAction) island.onAction({ type: 'longPress' });
+    return true;
+  });
+  // 盖板上的 ✓ / ✗（创建页的确认 / 放弃）→ 转发为与计时坞里相同的动作
+  ipcMain.handle('cover:action', (_e, a) => {
+    if (island && island.onAction && a && typeof a.type === 'string') island.onAction(a);
     return true;
   });
 
@@ -2246,13 +2301,17 @@ function runTests() {
       island.animating = false;
       island.onAction({ type: 'gesture', dy: -60 });
       ok('T9 上滑→收起成灵动岛', island.state === 'strip');
-      // 大屏为纯展示：鼠标穿透（不可操作），收回后恢复交互
+      // 大窗口是**纯展示**：鼠标穿透（不可操作），收回后恢复交互。
+      // （它底部那排「固定/设置/菜单/收起」按钮已按用户要求移除，所以不再需要接收点击。）
       const ignoreCalls = [];
       const origSetIgnore = island.win.setIgnoreMouseEvents.bind(island.win);
       island.win.setIgnoreMouseEvents = (v) => { ignoreCalls.push(v); return origSetIgnore(v); };
       island.manualState('zoom', 6000);
       island.animating = false;
-      ok('T9 大屏鼠标穿透（不可操作）', ignoreCalls.length > 0 && ignoreCalls[ignoreCalls.length - 1] === true);
+      ok(
+        `T9 大窗口为纯展示：鼠标穿透（不可操作）(state=${island.state}, 最后一次setIgnore=${ignoreCalls[ignoreCalls.length - 1]})`,
+        island.state === 'zoom' && ignoreCalls.length > 0 && ignoreCalls[ignoreCalls.length - 1] === true
+      );
       island.manualState('strip', 0);
       island.animating = false;
       ok('T9 灵动岛恢复交互', ignoreCalls[ignoreCalls.length - 1] === false);
@@ -2277,11 +2336,15 @@ function runTests() {
       );
 
       // —— T10 系统通知接管 + 免打扰 + 时间表 ——
-      settings.update({ smart: { notifyEnabled: true, notifyShowSec: 8 } });
+      // 本段测的是通知的基本行为（形态/免打扰/尺寸/全屏），
+      // 所以显式关掉节流（notifyMinGapSec: 0）—— 否则毫秒级连发的用例会被节流挡掉。
+      // 节流本身单独在 T10b 断言。
+      settings.update({ smart: { notifyEnabled: true, notifyShowSec: 8, notifyMinGapSec: 0 } });
       island.manualState('strip', 0);
       await sleep(300);
       island.animating = false;
       island.lastToasts = new Set();
+      island.lastNotifyAt = 0;
       // 模拟新通知
       island.handleToasts({ toasts: ['111|测试应用|这是一条通知内容'] });
       await sleep(300);
@@ -2348,9 +2411,19 @@ function runTests() {
       };
       island.tick(); // 全屏 → 灵动岛 + 穿透开启
       ok('T10 全屏→灵动岛并开启穿透', island.state === 'strip' && island.mousePT === true);
+      // 规格变更（打断控制）：全屏/授课中**系统通知被静默**，不再冒出来盖住课件 ——
+      // 投影时任何聊天 Toast 弹出来打断都是最糟的体验。课堂/天气/关机提醒走各自路径，不受此限。
+      // 注意：fullscreen 由探针的像素判定得出，在无显示器/虚拟环境下不稳定，
+      // 所以这里显式置位 —— 探针→fullscreen 的链路已由上面那条断言覆盖，
+      // 本条只负责验证"全屏时通知被静默"这一逻辑本身（否则会 flaky）。
+      const fsFromProbe = island.fullscreen;
+      island.fullscreen = true;
       island.handleToasts({ toasts: ['666|测试应用|全屏时的通知'] });
       await sleep(300);
-      ok('T10 全屏时通知优先展开并关闭穿透', island.state === 'notify' && island.mousePT === false);
+      ok(
+        `T10 全屏时系统通知被静默（不打断授课）(状态=${island.state} 探针算出全屏=${fsFromProbe})`,
+        island.state === 'strip'
+      );
       island.onAction({ type: 'dismiss' });
       // 最大化时通知同样可展开
       island.probe.last = {
@@ -2367,6 +2440,38 @@ function runTests() {
       await sleep(300);
       ok('T10 最大化时通知可展开', island.state === 'notify');
       island.onAction({ type: 'dismiss' });
+
+      // —— T10b 通知节流：聊天软件刷屏时不该让岛一直闪 ——
+      {
+        island.manualState('strip', 0);
+        await sleep(250);
+        island.animating = false;
+        island.lastToasts = new Set();
+        island.lastNotifyAt = 0;
+        settings.update({ smart: { notifyEnabled: true, notifyMinGapSec: 5 } });
+        island.handleToasts({ toasts: ['901|测试应用|第一条'] });
+        await sleep(250);
+        const first10b = island.state === 'notify';
+        island.lastToasts = new Set(); // 换一批窗口，确保"是节流挡的"而不是"被判为重复"
+        island.handleToasts({ toasts: ['902|测试应用|紧接着第二条'] });
+        await sleep(250);
+        ok(
+          `T10b 节流：间隔内的第二条系统通知被挡下 (第一条弹=${first10b} 第二条后状态=${island.state})`,
+          first10b === true && island.state === 'notify' && (island.notifyData && /第一条/.test(island.notifyData.body || ''))
+        );
+        // 关掉节流后应立刻能换新通知（证明挡下它的确实只是节流）
+        settings.update({ smart: { notifyMinGapSec: 0 } });
+        island.lastToasts = new Set();
+        island.handleToasts({ toasts: ['903|测试应用|关闭节流后的新通知'] });
+        await sleep(300);
+        ok(
+          `T10b 关掉节流→新通知立即可弹 (正文=${JSON.stringify((island.notifyData || {}).body || '')})`,
+          island.state === 'notify' && /关闭节流后/.test((island.notifyData || {}).body || '')
+        );
+        island.onAction({ type: 'dismiss' });
+        settings.update({ smart: { notifyMinGapSec: 5 } });
+        island.lastNotifyAt = 0;
+      }
       // 恢复中性数据，进入时间表测试
       island.probe.last = { ...island.probe.last, fgClass: 'Sci_Neutral', rect: null, li: 999999900, tick: 1000000000 };
       island.lastAutoSwitch = 0;
@@ -4685,17 +4790,11 @@ function runTests() {
       await sleep(1100);
       const spec30 = island.notchSpec(); // 必须在这之后读：上面刚把挖孔打开，才有 zone
       dom30 = await readWx30();
-      const wxSlot30 = 88;
-      const expectStrip30 = spec30 && spec30.zone ? 116 + Math.round(spec30.zone.w) + spec30.slotLeft + spec30.slotRight + wxSlot30 : -1;
+      // 方案 A：天气只在盖板上 —— 细条不再预留天气槽（宽度里没有那 88），也不再画 chip
+      const expectStrip30 = spec30 && spec30.zone ? 116 + Math.round(spec30.zone.w) + spec30.slotLeft + spec30.slotRight : -1;
       ok(
-        `T30 天气常驻细条（宽 ${dom30.width} 期望 ${expectStrip30}；chip=${dom30.has} 紧凑=${dom30.compact} 只图标+温度=${!dom30.textShown} ${dom30.temp}；chip ${dom30.chipL}~${dom30.chipR} 右瓣右缘=${dom30.rightR} 禁区右缘=${dom30.zoneR} err=${JSON.stringify(dom30.err || '')}）`,
-        dom30.state === 'strip' &&
-          dom30.has === true &&
-          dom30.compact === true &&
-          dom30.textShown === false &&
-          dom30.width === expectStrip30 &&
-          dom30.chipL >= dom30.rightR &&
-          dom30.chipL >= dom30.zoneR
+        `T30 天气不上细条（宽 ${dom30.width} 期望 ${expectStrip30}，不含天气槽；chip=${dom30.has} 期望 false；细条宽度=116+禁区 ${spec30 && spec30.zone ? Math.round(spec30.zone.w) : '?'}+槽位）`,
+        dom30.state === 'strip' && dom30.has === false && dom30.width === expectStrip30
       );
       // 还原：后面的用例按「无挖孔 + banner」跑
       settings.update({ ui: { cameraNotch: { enabled: false } }, weather: { showInIsland: 'banner' } });
@@ -4709,8 +4808,10 @@ function runTests() {
       await sleep(900);
       const posLeft30 = await readWx30();
       ok(
-        `T30 天气位置=左侧 (chip ${posLeft30.chipL}~${posLeft30.chipR} 宽 ${posLeft30.width}；贴左缘=${posLeft30.chipL <= 16})`,
-        posLeft30.has === true && posLeft30.chipL <= 16 && posLeft30.chipR < posLeft30.width / 2
+        `T30 天气位置=左侧（老配置已失效：细条不再画 chip）(chip ${posLeft30.chipL}~${posLeft30.chipR} has=${posLeft30.has} 宽 ${posLeft30.width})`,
+        // 「天气位置」选项已从配置页移除，天气只在盖板上显示；
+        // 老配置里残留的 pos:'left' 必须被忽略 —— 细条已不预留槽位，画上去会被盖板压住。
+        posLeft30.has === false
       );
       // 盖板上：细条让位（不占位、不画），天气由盖板窗口自己画 —— 必须先开挖孔，盖板窗口才存在
       settings.update({ ui: { cameraNotch: { enabled: true, preset: 'center' } }, weather: { pos: 'cover' } });
@@ -4793,7 +4894,8 @@ function runTests() {
           return {
             tab: !!tab,
             active: !!document.querySelector('#tab-weather.active'),
-            enabled: g('wxEnabled'), city: g('wxCity'), unit: g('wxUnit'), show: g('wxShow'), pos: g('wxPos'),
+            enabled: g('wxEnabled'), city: g('wxCity'), unit: g('wxUnit'), show: g('wxShow'),
+            posFixedNote: !!document.querySelector('#tab-weather .hint'), // 位置已改成固定说明（无 wxPos 控件）
             anim: g('wxAnim'), intensity: g('wxIntensity'), refresh: g('wxRefresh'),
             rules: document.querySelectorAll('#wx-rules .wx-rule').length,
             status: (document.getElementById('wx-status') || {}).textContent || '',
@@ -4810,7 +4912,8 @@ function runTests() {
           wxCfg30.city === '郑州' &&
           wxCfg30.unit === 'c' &&
           wxCfg30.show === 'always' &&
-          wxCfg30.pos === 'right' &&
+          // 「天气位置」控件已移除（天气固定只在盖板上显示），改为断言说明文字存在
+          wxCfg30.posFixedNote === true &&
           wxCfg30.anim === true &&
           Number(wxCfg30.intensity) === 100 &&
           Number(wxCfg30.refresh) === 30 &&
@@ -4939,6 +5042,14 @@ function runTests() {
         !!pick31 && pick31.name === '期末考' && !!pick31b && pick31b.name === '已过' && pick31c === null
       );
       // 端到端：模板写进设置 → 盖板窗口真的画出这行字（与天气 chip 并存）
+      // 前置：盖板只在**灵动岛常态**下显示日常内容（新规格：任何非 strip 形态都清空），
+      // 所以先把状态机与计时坞交互态都归位，否则这里会测到"被清空"的盖板。
+      island.setState('strip');
+      island.dockEdit = false;
+      island.dockMenu = false;
+      island.setManual('auto');
+      settings.update({ timer: { active: false, endsAt: 0, totalMs: 0, pausedLeftMs: null } });
+      await sleep(600);
       const cnKeep31 = JSON.parse(JSON.stringify(settings.load().ui.cameraNotch || {}));
       const wxKeep31 = JSON.parse(JSON.stringify(settings.load().weather || {}));
       settings.update({
@@ -5219,25 +5330,48 @@ function runTests() {
           !!due34a && due34a.name === '国庆节' && due34b === null && due34c === null &&
           txt34.title === '距离 国庆节' && txt34.num === '8' && txt34.unit === '天' && txt34.date === '2026-10-01'
       );
-      // 手动「计时坞」模式：状态机与渲染层
+      // —— 新规格：计时坞**只用于手动设置的计时**，节假日到点不再自动弹坞 ——
       const modeKeep34 = settings.load().manual.mode;
       const hdKeep34 = JSON.parse(JSON.stringify(settings.load().holidays || {}));
       settings.update({ holidays: { enabled: true, leadDays: 30, items: items34 } });
       island.applySettings();
       await sleep(1400); // 等动画结束
-      island.tick(); // 算 dockOn
-      const dockState34 = island.decideState({
+      island.tick();
+      // 自动模式 + 节假日到点：应保持灵动岛（历史上那条 dockOn 分支恒为 false，是死代码，已移除）
+      const dockAuto34 = island.decideState({
         idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
         expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
-        state: 'strip', dockOn: island.dockOn,
+        state: 'strip',
       });
+      ok(
+        `T34 节假日到点不再自动进坞（自动模式判定=${dockAuto34}，期望 strip）`,
+        dockAuto34 === 'strip'
+      );
+      // 「计时坞」不再是可常驻的手动模式：即使把 mode 设成 'dock' 也不进坞
+      //（坞只由「长按灵动岛」打开 —— 这正是"启动必须是灵动岛"的保证）。
       settings.update({ manual: { mode: 'dock' } });
       island.applySettings();
       await sleep(1500);   // 等几何动画结束：tick 在 animating 期间会直接返回
       island.lastAutoSwitch = 0; // 清掉自动切换去抖（否则 1 秒内不会进新状态）
       island.tick();
       await sleep(600);
-      // 渲染层单独验证：直接切到计时坞形态（自动/手动时序已经在上一行 tick 里断言过 dockOn 置位）
+      const dockManual34 = island.decideState({
+        idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'dock', smart: true, hideOnMaximized: true,
+        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        state: 'strip',
+      });
+      ok(
+        `T34 「计时坞」不再是常驻模式（mode=dock 判定=${dockManual34}，期望 strip；且启动=灵动岛）`,
+        dockManual34 === 'strip'
+      );
+      // 反过来：长按进入交互期（dockEdit/dockMenu）时**必须**进坞
+      const dockByLong34 = island.decideState({
+        idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
+        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        state: 'strip', dockInteractive: true,
+      });
+      ok(`T34 长按交互期才进坞（dockInteractive=true 判定=${dockByLong34}）`, dockByLong34 === 'dock');
+      // 渲染层单独验证：直接切到计时坞形态
       island.manualState('dock', 20000);
       await sleep(1200);
       const dockDom34 = await island.win.webContents.executeJavaScript(`(() => {
@@ -5247,10 +5381,10 @@ function runTests() {
         return { state: document.body.dataset.state, hasWrap: !!w, num: n ? n.textContent : '', title: (document.querySelector('.dk-title') || {}).textContent || '', pillBg: p ? getComputedStyle(p).backgroundColor : '', radius: p ? getComputedStyle(p).borderRadius : '' };
       })()`);
       ok(
-        `T34 计时坞形态（黑底白字，效果同通知）(状态机=${dockState34} 节假日到点置位 dockOn=${island.dockOn} 渲染层=${dockDom34.state} 标题=${JSON.stringify(dockDom34.title)} 数字=${JSON.stringify(dockDom34.num)} 底=${dockDom34.pillBg} 圆角=${dockDom34.radius})`,
-        dockState34 === 'dock' && island.dockOn === true &&
-          dockDom34.state === 'dock' && dockDom34.hasWrap === true &&
-          /国庆节/.test(dockDom34.title) && /^\d+$/.test(dockDom34.num) && /rgb\(0, 0, 0\)/.test(dockDom34.pillBg)
+        `T34 计时坞=手机时钟式倒计时器（黑底白字）(渲染层=${dockDom34.state} 标题=${JSON.stringify(dockDom34.title)} 数字=${JSON.stringify(dockDom34.num)} 底=${dockDom34.pillBg} 圆角=${dockDom34.radius})`,
+        dockDom34.state === 'dock' && dockDom34.hasWrap === true &&
+          // 坞不再显示事件/节假日（"距离 XX N 天"），而是计时器：标题「倒计时」+ mm:ss 数字
+          /倒计时/.test(dockDom34.title) && /^\d{2}:\d{2}$/.test(dockDom34.num) && /rgb\(0, 0, 0\)/.test(dockDom34.pillBg)
       );
       // 盖板联动：大窗口展开时盖板不显示任何内容；收回细条内容回来
       settings.update({ manual: { mode: 'auto' }, ui: { cameraNotch: { enabled: true, preset: 'center', text: { template: '还有 {days}{unit}', size: 12 } } }, weather: { enabled: true, showInIsland: 'always', pos: 'cover' } });
@@ -5288,60 +5422,425 @@ function runTests() {
           }))()`)
         : null;
       ok(
-        `T34 角落卡片已去掉 + 配置页新增计时坞/节假日 (corner 选项=${cfgDom34 && cfgDom34.cornerOpt} 计时坞单选=${cfgDom34 && cfgDom34.dockRadio} 节假日开关=${cfgDom34 && cfgDom34.hdEnabled} 列表=${cfgDom34 && cfgDom34.hdList} 分类页=${cfgDom34 && cfgDom34.hdTab} 手动模式=${JSON.stringify(cfgDom34 && cfgDom34.manualModes)}；迁移 corner→${settings.migrateFullscreenMode({ hideOnFullscreen: false, fullscreenMode: 'corner' }, { fullscreenMode: 'corner' }) ? 'x' : 'strip'}）`,
-        !!cfgDom34 && cfgDom34.cornerOpt === false && cfgDom34.dockRadio === true && cfgDom34.hdEnabled && cfgDom34.hdList && cfgDom34.hdTab &&
-          (cfgDom34.manualModes || []).includes('dock') &&
+        `T34 角落卡片已去掉 + 配置页节假日（计时坞已从手动模式移除）(corner 选项=${cfgDom34 && cfgDom34.cornerOpt} 计时坞单选项=${cfgDom34 && cfgDom34.dockRadio}（期望 false） 节假日开关=${cfgDom34 && cfgDom34.hdEnabled} 列表=${cfgDom34 && cfgDom34.hdList} 分类页=${cfgDom34 && cfgDom34.hdTab} 手动模式=${JSON.stringify(cfgDom34 && cfgDom34.manualModes)}）`,
+        !!cfgDom34 && cfgDom34.cornerOpt === false && cfgDom34.dockRadio === false && cfgDom34.hdEnabled && cfgDom34.hdList && cfgDom34.hdTab &&
+          // 「计时坞」不再是一个可常驻的手动模式（它由长按打开），所以配置页里不该再有这个单选项
+          JSON.stringify(cfgDom34.manualModes) === JSON.stringify(['auto', 'pinned', 'zoom', 'hidden']) &&
           // 旧配置里的 corner 会被迁移掉（用户入口已移除；内部状态仅供几何自检）
           settings.load().smart.fullscreenState !== 'corner'
+      );
+      // 历史遗留：settings 里若写着 manual.mode='dock'（长按旧实现写进去的），必须被迁回 auto，
+      // 否则升级后启动仍会停在计时坞。
+      ok(
+        `T34 遗留 manual.mode='dock' 会被迁回 auto (实测=${settings.load().manual.mode})`,
+        settings.load().manual.mode !== 'dock'
       );
       settings.update({ manual: { mode: modeKeep34 }, holidays: hdKeep34 });
       island.applySettings();
       await sleep(300);
 
-      // —— T35 计时坞快捷添加（长按灵动岛启动）——
+      // —— T35 计时坞 = 手机时钟式倒计时器（只由长按打开；不常驻、不持久化）——
       const modeKeep35 = settings.load().manual.mode;
       const evKeep35 = JSON.parse(JSON.stringify(settings.events() || []));
-      settings.update({ manual: { mode: 'dock' } });
+      island.setManual('auto');
       island.applySettings();
       await sleep(1400);
       island.lastAutoSwitch = 0;
       island.tick();
-      await sleep(900);
-      const dockState35 = await island.win.webContents.executeJavaScript(`(() => {
-        const chips = Array.from(document.querySelectorAll('.dk-chip'));
-        return { state: document.body.dataset.state, n: chips.length, labels: chips.map((c) => c.textContent.trim()), days: chips.filter((c) => c.dataset.days).map((c) => c.dataset.days) };
-      })()`);
-      // 此时还在上一段的计时坞（非编辑态）：不应有芯片
-      ok(`T35 非编辑态不显示快捷芯片 (状态=${dockState35.state} 芯片数=${dockState35.n})`, dockState35.state === 'dock' && dockState35.n === 0);
-      // 长按 → 启动计时坞 + 进入快捷添加态
+      await sleep(800);
+      const dockState35 = await island.win.webContents.executeJavaScript(`(() => ({
+        state: document.body.dataset.state,
+        n: document.querySelectorAll('.dk-chip, .dk-big').length,
+      }))()`);
+      // 常态（自动模式、未长按）必须停在灵动岛 —— 这正是"程序初始/常态是灵动岛，不是计时坞"
+      ok(
+        `T35 常态是灵动岛而非计时坞 (状态=${dockState35.state}，期望 strip；芯片数=${dockState35.n})`,
+        dockState35.state === 'strip' && dockState35.n === 0
+      );
+      // 长按 → 启动计时坞 + 进入创建页（短时倒计时：横向对数刻度 + 开始 / 取消）
       island.onAction({ type: 'longPress' });
       await sleep(900);
       const edit35 = await island.win.webContents.executeJavaScript(`(() => {
-        const chips = Array.from(document.querySelectorAll('.dk-chip'));
-        return { state: document.body.dataset.state, dockEdit: !!dockEdit, n: chips.length, days: chips.filter((c) => c.dataset.days).map((c) => c.dataset.days).join(','), hasDone: chips.some((c) => c.dataset.act === 'dockDone') };
+        const chips = Array.from(document.querySelectorAll('.dk-chip, .dk-big'));
+        const scale = document.getElementById('dk-scale');
+        return {
+          state: document.body.dataset.state,
+          dockEdit: !!dockEdit,
+          n: chips.length,
+          labels: chips.map((c) => c.textContent.trim()).join(','),
+          hasPicker: !!document.querySelector('.dk-picker'),
+          hasRuler: !!document.getElementById('dk-ruler'),
+          hasNeedle: !!document.querySelector('.dk-ruler-needle'),
+          needleLeft: (() => { const n = document.querySelector('.dk-ruler-needle'); const r = document.getElementById('dk-ruler'); if (!n || !r) return -1; return Math.round(n.getBoundingClientRect().left + n.getBoundingClientRect().width / 2 - r.getBoundingClientRect().left); })(),
+          rulerW: (() => { const r = document.getElementById('dk-ruler'); return r ? Math.round(r.clientWidth) : 0; })(),
+          ticks: document.querySelectorAll('.dk-tick').length,
+          majors: document.querySelectorAll('.dk-tick.major').length,
+          pickLabel: (document.getElementById('dk-pick-label') || {}).textContent || '',
+          hasDone: chips.some((c) => c.dataset.act === 'dockDone'),
+        };
       })()`);
       ok(
-        `T35 长按灵动岛→启动计时坞并进入快捷添加态 (模式=${settings.load().manual.mode} 状态=${edit35.state} 编辑态=${edit35.dockEdit} 芯片=${edit35.n} 天数=${JSON.stringify(edit35.days)} 完成按钮=${edit35.hasDone})`,
-        settings.load().manual.mode === 'dock' && edit35.state === 'dock' && edit35.dockEdit === true && edit35.n === 6 && edit35.days === '1,3,7,30' && edit35.hasDone === true
+        `T35 长按灵动岛→进坞创建页(对数游标尺+开始/取消)，且不写 manual.mode (manual.mode=${settings.load().manual.mode}（期望非 dock） 状态=${edit35.state} 控件=${edit35.hasRuler} 指示线=${edit35.hasNeedle}@${edit35.needleLeft}/${Math.round(edit35.rulerW / 2)} 可见刻度=${edit35.ticks}(粗=${edit35.majors}) 标签=${JSON.stringify(edit35.pickLabel)} 按钮=${edit35.labels})`,
+        // 关键：长按**不再**把 manual.mode 写成 'dock' —— 否则下次启动会停在计时坞
+        settings.load().manual.mode !== 'dock' &&
+          edit35.state === 'dock' &&
+          edit35.dockEdit === true &&
+          edit35.hasPicker === true &&
+          edit35.hasRuler === true &&
+          edit35.hasNeedle === true &&
+          // 刻度是动态生成的（按容器宽度画可见范围），不再是固定的 19 格
+          edit35.ticks > 8 &&
+          edit35.majors > 0 &&
+          // 指示线固定在容器正中
+          Math.abs(edit35.needleLeft - edit35.rulerW / 2) <= 2 &&
+          edit35.pickLabel === '15 分钟' &&
+          edit35.hasDone === true
       );
-      // 坞内点「+7 天」→ 新建倒计时事件 + 坞里立刻显示 + 退出编辑态
-      island.onAction({ type: 'dockAdd', days: 7 });
-      await sleep(1200);
-      const ev35 = (settings.events() || []).find((e) => /倒计时/.test(e.name || ''));
-      const days35 = ev35 ? Math.round((new Date(ev35.date).getTime() - Date.now()) / 86400000) : -999;
-      const after35 = await island.win.webContents.executeJavaScript(`(() => ({ edit: !!dockEdit, n: document.querySelectorAll('.dk-chip').length, num: (document.querySelector('.dk-num') || {}).textContent || '', title: (document.querySelector('.dk-title') || {}).textContent || '' }))()`);
+      // 游标尺：按住左右拖动即可连续改时长（对数坐标）。
+      // 向左拖 = 刻度左移 = 指示线落在更大的值上（时间变长），反之变短。
+      // 拖动游标尺。松手后有**惯性**会继续滑一段，所以等它滑停后再读标签 ——
+      // 否则读到的是减速途中的值，不是最终落定的时间。
+      const dragRuler = async (dx) => {
+        await island.win.webContents.executeJavaScript(`(() => {
+          const r = document.getElementById('dk-ruler');
+          if (!r) return null;
+          const b = r.getBoundingClientRect();
+          const cx = Math.round(b.left + b.width / 2);
+          const cy = Math.round(b.top + b.height / 2);
+          const mk = (type, x) => new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: cy, pointerId: 1, isPrimary: true, button: 0, buttons: 1 });
+          r.dispatchEvent(mk('pointerdown', cx));
+          document.dispatchEvent(mk('pointermove', cx + (${dx})));
+          document.dispatchEvent(mk('pointerup', cx + (${dx})));
+          return true;
+        })()`);
+        await sleep(1200);
+        const label = await island.win.webContents.executeJavaScript(
+          `(document.getElementById('dk-pick-label')||{}).textContent || ''`
+        );
+        return { label };
+      };
+      const before35 = await island.win.webContents.executeJavaScript(`(document.getElementById('dk-pick-label')||{}).textContent || ''`);
+      const left35 = await dragRuler(-160); // 向左 160px = 10 格 → 应显著变长
+      const right35 = await dragRuler(160); // 再向右拖回
       ok(
-        `T35 快捷添加：点 [+7 天] → 新建倒计时事件 + 坞里立刻显示 (事件=${ev35 && ev35.name} 日期=${ev35 && ev35.date} 约${days35}天后 坞标题=${JSON.stringify(after35.title)} 数字=${after35.num} 编辑态=${after35.edit} 芯片=${after35.n})`,
-        !!ev35 && days35 >= 6 && days35 <= 7 && after35.edit === false && after35.n === 0 && /距离/.test(after35.title) && /^\d+$/.test(after35.num)
+        `T35 游标尺可左右滑动改时长（对数）(初始=${JSON.stringify(before35)} 左拖10格=${JSON.stringify(left35 && left35.label)} 右拖回=${JSON.stringify(right35 && right35.label)})`,
+        !!left35 && !!right35 && left35.label !== before35 && right35.label !== left35.label
       );
-      // 离开计时坞模式：编辑态自动清零
-      island.setManual('auto');
-      await sleep(600);
-      const left35 = await island.win.webContents.executeJavaScript(`(() => ({ edit: !!dockEdit, mode: ${JSON.stringify('x')} }))()`);
-      ok(`T35 离开计时坞模式后编辑态清零 (编辑态=${left35.edit})`, island.dockEdit === false && left35.edit === false);
+      // 「无限拖拽」：一直往左拖，时间一直变大 —— **没有上限**（原先卡在 24 小时）
+      const far35 = await dragRuler(-4000); // ≈100 格 → 进对数段
+      const farHours = far35 && far35.label ? parseInt((String(far35.label).match(/^(\d+)/) || [])[1], 10) || 0 : 0;
+      ok(
+        `T35 游标尺可无限拖拽（无上限）(拖到 ${JSON.stringify(far35 && far35.label)} → ${farHours} 小时，> 24)`,
+        !!far35 && farHours > 24
+      );
+      // 大幅右拖 → 稳稳落到**最小值**（有惯性也一样，会被下界挡住）
+      await dragRuler(9000);
+      const reset35 = await island.win.webContents.executeJavaScript(`(document.getElementById('dk-pick-label')||{}).textContent || ''`);
+      ok(
+        `T35 一直向右拖 → 落到最小值 5 秒（1 分钟以下进入秒级）(=${JSON.stringify(reset35)})`,
+        /^5 秒$/.test(reset35)
+      );
+      // 从最小值再往左滑 → 仍在秒级区间内可调（这就是"1 分钟时继续左滑设秒"）
+      await dragRuler(-64);
+      const sec35 = await island.win.webContents.executeJavaScript(`(document.getElementById('dk-pick-label')||{}).textContent || ''`);
+      ok(
+        `T35 秒级区间可调（左滑后仍在秒级）(=${JSON.stringify(sec35)})`,
+        /^\d+ 秒$/.test(sec35) && parseInt(sec35, 10) > 5
+      );
+      // 复位到 15 分钟，后面的用例从已知状态开始
+      await dragRuler(9000);
+      await dragRuler(-700);
+      const back35 = await island.win.webContents.executeJavaScript(`(document.getElementById('dk-pick-label')||{}).textContent || ''`);
+      ok(`T35 可拖回常用区间（=${JSON.stringify(back35)}）`, /分钟|小时/.test(back35));
+      // —— 盖板上的计时设置条：左边选中的时间、右边确认 / 放弃 ——
+      // （盖板只在启用「挖孔屏避让」时才有窗口，T31 已经建过；这里确保它是开的）
+      settings.update({ ui: { cameraNotch: { enabled: true, preset: 'center', text: { template: '', size: 12 } } } });
+      island.applySettings();
+      island.syncSensorCover();
+      island.pushCoverContent(true);
+      await sleep(900);
+      const coverSet35 = await (async () => {
+        const cw = require('./sensor-cover').win;
+        if (!cw || cw.isDestroyed()) return null;
+        return cw.webContents.executeJavaScript(`(() => {
+          const cap = document.getElementById('cap');
+          const time = document.getElementById('cv-time');
+          const acts = document.getElementById('cv-acts');
+          const ok = document.getElementById('cv-ok');
+          const no = document.getElementById('cv-no');
+          const r = ok ? ok.getBoundingClientRect() : null;
+          return {
+            mode: cap ? cap.dataset.mode : '',
+            time: time ? time.textContent : '',
+            timeShown: time ? getComputedStyle(time).display !== 'none' : false,
+            actsShown: acts ? getComputedStyle(acts).display !== 'none' : false,
+            okHit: r ? (() => { const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)); return !!(el && el.id === 'cv-ok'); })() : false,
+          };
+        })()`);
+      })();
+      ok(
+        `T35 非灵动岛状态盖板不显示任何内容 (模式=${coverSet35 && coverSet35.mode} 时间=${JSON.stringify(coverSet35 && coverSet35.time)} 时间可见=${coverSet35 && coverSet35.timeShown} 按钮可见=${coverSet35 && coverSet35.actsShown})`,
+        // 计时坞（dock）不是灵动岛状态 → 盖板必须全空。设置用的时间/按钮现在都在坞里。
+        !!coverSet35 &&
+          coverSet35.mode === 'normal' &&
+          coverSet35.timeShown === false &&
+          coverSet35.actsShown === false
+      );
+      // 创建页「取消」→ 收起计时坞，回灵动岛（坞不再有"常态"这一说）
+      await island.win.webContents.executeJavaScript(`(() => { const b = document.querySelector('[data-act="dockDone"]'); if (b) b.click(); return true; })()`);
+      await sleep(1100);
+      const cancel35 = await island.win.webContents.executeJavaScript(`(() => ({
+        hasPicker: !!document.querySelector('.dk-picker'),
+        state: document.body.dataset.state,
+      }))()`);
+      ok(
+        `T35 创建页「取消」→ 收起计时坞回灵动岛 (创建页=${cancel35.hasPicker} 状态=${cancel35.state} 编辑态=${island.dockEdit})`,
+        cancel35.hasPicker === false && cancel35.state === 'strip' && island.dockEdit === false
+      );
+      // 注：原「坞内点 [+7 天] 新建事件」已随坞的职责变更移除 ——
+      // 计时坞现在只做手机时钟式倒计时，不再显示/新建事件（事件请在配置页管理）。
       settings.update({ manual: { mode: modeKeep35 }, events: evKeep35 });
       island.applySettings();
       await sleep(400);
+
+      // —— T36 短时倒计时：开始后收起回岛 + 岛左秒表/右剩余 + 盖板空 + 大窗口仍显示 ——
+      island.showNotification = () => {}; // 屏蔽外部通知抢状态（否则断言会测到通知帧）
+      const evKeep36 = JSON.parse(JSON.stringify(settings.events() || []));
+      const modeKeep36 = settings.load().manual.mode;
+      try {
+        // 不需要把 manual.mode 设成 'dock' —— 长按本身就会打开计时坞（坞只在长按交互期显示）
+        island.setManual('auto');
+        island.applySettings();
+        await sleep(900);
+        island.lastAutoSwitch = 0;
+        island.tick();
+        await sleep(500);
+
+        // 从创建页真实点「开始」：先把游标尺拖到一个已知时长，再点开始，
+        // 这样断言的是"游标尺选中的值 → 实际计时时长"的真实链路。
+        island.onAction({ type: 'longPress' });
+        await sleep(1000);
+        // 先把游标尺拖到 15 分钟，再点开始
+        await island.win.webContents.executeJavaScript(`(() => {
+          const r = document.getElementById('dk-ruler');
+          if (!r) return false;
+          const b = r.getBoundingClientRect();
+          const cx = Math.round(b.left + b.width / 2), cy = Math.round(b.top + b.height / 2);
+          const mk = (type, x) => new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: cy, pointerId: 1, isPrimary: true, button: 0, buttons: 1 });
+          // 先大幅右拖复位到最小值，再左拖 7.5 格 → 15 分钟（线性段每格 2 分钟）
+          r.dispatchEvent(mk('pointerdown', cx));
+          document.dispatchEvent(mk('pointermove', cx + 4000));
+          document.dispatchEvent(mk('pointerup', cx + 4000));
+          r.dispatchEvent(mk('pointerdown', cx));
+          document.dispatchEvent(mk('pointermove', cx - 288));
+          document.dispatchEvent(mk('pointerup', cx - 288));
+          return true;
+        })()`);
+        await sleep(1400); // 等惯性滑停，再读选中值（否则读到的是减速途中的值）
+        // 读标签与点「开始」放在**同一次** JS 求值里：中间不再隔着惯性/动画，读到什么就开什么。
+        const startInfo = await island.win.webContents.executeJavaScript(`(() => {
+          const label = (document.getElementById('dk-pick-label') || {}).textContent || '';
+          const secs = pickSeconds; // 与标签同一个瞬间的值，便于精确比对
+          const b = document.querySelector('[data-act="timerStart"]');
+          if (b) b.click();
+          return { pickLabel: label, pickSeconds: secs };
+        })()`);
+        await sleep(1400);
+        const started = island.timerPayload();
+        // 断言"**显示的值 → 实际计时**"这条链路一致（不依赖精确像素：松手后还有惯性会多滑一段）。
+        // 标签可能是「N 秒 / N 分钟 / H 小时 M 分」。
+        const labelSec = (() => {
+          const s = String(startInfo.pickLabel || '');
+          let m;
+          if ((m = /^(\d+) 秒$/.exec(s))) return +m[1];
+          if ((m = /^(\d+) 分钟$/.exec(s))) return +m[1] * 60;
+          if ((m = /^(\d+) 小时(?: (\d+) 分)?$/.exec(s))) return +m[1] * 3600 + (+(m[2] || 0)) * 60;
+          return NaN;
+        })();
+        ok(
+          `T36 游标尺当时的秒值 → 实际计时精确对齐 (显示=${JSON.stringify(startInfo.pickLabel)} 游标=${startInfo.pickSeconds}s 实际totalMs=${started && started.totalMs})`,
+          // 与游标尺当时的值精确对齐：标签只显示到分钟（30 分钟可能是 1800~1859 秒），拿它反推会误判
+          !!started && started.active === true && Number.isFinite(startInfo.pickSeconds) &&
+            Math.abs(started.totalMs - startInfo.pickSeconds * 1000) <= 1000
+        );
+
+        // ② 开始后收起计时坞回到灵动岛；③ 左秒表 + 右剩余时间覆盖原内容
+        const t36 = await island.win.webContents.executeJavaScript(`(() => ({
+          state: document.body.dataset.state,
+          hasWatch: !!document.querySelector('.s-watch svg'),
+          watchColor: document.querySelector('.s-watch') ? getComputedStyle(document.querySelector('.s-watch')).color : '',
+          num: (document.querySelector('[data-timer-num]') || {}).textContent || '',
+          numBeforeWatch: (() => { const r = document.querySelector('.s-row'); return r ? r.innerHTML.indexOf('s-watch') < r.innerHTML.indexOf('s-timer') : false; })(),
+          hasEvent: !!document.querySelector('[data-role="days"]'),
+        }))()`);
+        const t36payload = island.timerPayload();
+        ok(
+          `T36 开始倒计时→收起回岛+左秒表右剩余 (状态=${t36.state} 秒表=${t36.hasWatch} 色=${t36.watchColor} 剩余=${JSON.stringify(t36.num)} 秒表在左=${t36.numBeforeWatch} 原事件已覆盖=${!t36.hasEvent} 载荷active=${!!(t36payload && t36payload.active)})`,
+          t36.state === 'strip' &&
+            t36.hasWatch === true &&
+            t36.watchColor === 'rgb(52, 199, 89)' &&
+            /^\d{2}:\d{2}$/.test(t36.num) &&
+            t36.numBeforeWatch === true &&
+            t36.hasEvent === false &&
+            !!(t36payload && t36payload.active)
+        );
+
+        // 计时进行中长按 → 操作页必须显示**这个计时的剩余**（手机时钟式），
+        // 而不是事件/节假日；按钮也只作用于计时器本身。
+        island.onAction({ type: 'longPress' });
+        await sleep(1200);
+        const dockOp36 = await island.win.webContents.executeJavaScript(`(() => ({
+          state: document.body.dataset.state,
+          num: (document.querySelector('[data-timer-num]') || {}).textContent || '',
+          title: (document.querySelector('.dk-title') || {}).textContent || '',
+          acts: Array.from(document.querySelectorAll('.dk-chip, .dk-big')).map((c) => c.dataset.act),
+        }))()`);
+        ok(
+          `T36 计时中长按→操作页显示该计时的剩余 (状态=${dockOp36.state} 剩余=${JSON.stringify(dockOp36.num)} 标题=${JSON.stringify(dockOp36.title)} 动作=${JSON.stringify(dockOp36.acts)})`,
+          dockOp36.state === 'dock' &&
+            /^\d{2}:\d{2}$/.test(dockOp36.num) &&
+            JSON.stringify(dockOp36.acts) === JSON.stringify(['timerPause', 'timerCancel', 'dockMenuClose'])
+        );
+        // 操作页「返回」→ 收起回灵动岛（计时继续跑，不受影响）
+        island.onAction({ type: 'dockMenuClose' });
+        await sleep(1000);
+        const back36 = await island.win.webContents.executeJavaScript(`(() => ({ state: document.body.dataset.state }))()`);
+        ok(
+          `T36 操作页「返回」→ 收起回灵动岛且计时继续 (状态=${back36.state} 计时仍在=${!!(island.timerPayload() && island.timerPayload().active)})`,
+          back36.state === 'strip' && !!(island.timerPayload() && island.timerPayload().active)
+        );
+
+        // ③ 逐秒外推：主进程不每秒推送时数字也应自己走动（_at 基准）。
+        // 采样要跨过至少一个显示秒边界：tick 间隔 1s，且显示值按秒向下取整，
+        // 窗口太短会取到同一个秒（曾用 2.3s 被判为"没走动"的假失败）。这里采 6s 取最大差。
+        const toSec = (s) => {
+          const m = /^(\d+):(\d+)$/.exec(String(s || '').trim());
+          return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+        };
+        const s1 = await island.win.webContents.executeJavaScript(`(() => (document.querySelector('[data-timer-num]') || {}).textContent || '')()`);
+        await sleep(6000);
+        const s2 = await island.win.webContents.executeJavaScript(`(() => (document.querySelector('[data-timer-num]') || {}).textContent || '')()`);
+        const d1 = toSec(s1);
+        const d2 = toSec(s2);
+        ok(
+          `T36 剩余时间逐秒外推 (${JSON.stringify(s1)} → ${JSON.stringify(s2)}，差 ${d1 - d2}s)`,
+          Number.isFinite(d1) && Number.isFinite(d2) && d2 < d1
+        );
+
+        // ④ 计时进行中盖板不显示内容
+        const cover36 = island.coverContent();
+        ok(
+          `T36 计时进行中盖板不显示内容 (文字=${JSON.stringify(cover36.text)} 天气=${JSON.stringify(cover36.weather)})`,
+          !cover36.text && !cover36.weather
+        );
+
+        // ④ 计时进行中「展开」不进入大窗口 —— 计时只显示在灵动岛上（用户明确要求）。
+        // 这里直接测状态机判定（渲染层的那条 zoom+timer 分支已按同一要求移除）。
+        const z36 = island.decideState({
+          idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
+          expandIdleSec: 4, zoomIdleSec: 5, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+          hasTimer: true, state: 'strip',
+        });
+        ok(
+          `T36 计时中请求展开→保持灵动岛（计时只在岛上显示）(判定=${z36}，期望 strip)`,
+          z36 === 'strip'
+        );
+        // 对照：没有计时时，「大窗口驻留」照常生效（别把大窗口功能一起禁掉）
+        const z36b = island.decideState({
+          idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'zoom', smart: true, hideOnMaximized: true,
+          expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+          hasTimer: false, state: 'strip',
+        });
+        ok(`T36 无计时时「大窗口驻留」仍生效 (判定=${z36b}，期望 zoom)`, z36b === 'zoom');
+
+        // 取消 → 计时清空（盖子与岛都恢复）
+        island.onAction({ type: 'timerCancel' });
+        await sleep(800);
+        ok(`T36 取消倒计时后载荷清空 (载荷=${JSON.stringify(island.timerPayload())})`, island.timerPayload() === null);
+      } finally {
+        island.onAction({ type: 'timerCancel' });
+        island.setManual('auto');
+        settings.update({ manual: { mode: modeKeep36 }, events: evKeep36 });
+        island.applySettings();
+        await sleep(500);
+      }
+
+      island.setManual('auto');
+      island.applySettings();
+      await sleep(400);
+
+      // —— T38 可撤销删除（配置页）：删除后 5 秒内可点「撤销」还原 ——
+      // 人因研究：对破坏性操作，「可撤销」优于「阻断式确认」—— 不打断流程，误删也救得回来。
+      // 这里同时验证 toast 的 pointer-events（.toast 原本是 none，撤销按钮会点不到）。
+      {
+        const hdKeep38 = JSON.parse(JSON.stringify(settings.load().holidays || {}));
+        try {
+          // 先关掉配置窗口再改设置、然后重新打开 —— 否则窗口里是 update 之前加载的旧数据，
+          // 删除会写回旧数组，断言就测不到"这一条被删掉了"。
+          config.close();
+          await sleep(600);
+          settings.update({
+            holidays: {
+              enabled: true,
+              items: [
+                { name: '测试节A', date: '2027-05-01' },
+                { name: '测试节B', date: '2027-10-01' },
+              ],
+            },
+          });
+          config.open();
+          let cw38 = null;
+          const ddl38 = Date.now() + 8000;
+          while (Date.now() < ddl38) {
+            cw38 = config.getWindow();
+            if (cw38 && !cw38.webContents.isLoading()) {
+              const ready38 = await cw38.webContents.executeJavaScript(
+                `!!document.querySelector('#hd-list button[data-hd-del]')`
+              );
+              if (ready38) break;
+            }
+            await sleep(150);
+          }
+          if (!cw38) {
+            ok('T38 可撤销删除（配置窗口未就绪）', false);
+          } else {
+            const before38 = (settings.load().holidays.items || []).length;
+            await cw38.webContents.executeJavaScript(
+              `(() => { const b = document.querySelector('#hd-list button[data-hd-del]'); if (b) b.click(); return true; })()`
+            );
+            await sleep(900);
+            const afterDel = (settings.load().holidays.items || []).length;
+            const toastInfo = await cw38.webContents.executeJavaScript(`(() => {
+              const t = document.getElementById('toast');
+              const btn = t ? t.querySelector('.toast-undo') : null;
+              const cs = t ? getComputedStyle(t) : null;
+              return {
+                shown: t ? t.classList.contains('show') : false,
+                hasBtn: !!btn,
+                pe: cs ? cs.pointerEvents : '',
+                text: t ? t.textContent : '',
+                hit: btn ? (() => { const r = btn.getBoundingClientRect(); const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)); return !!(el && el.classList && el.classList.contains('toast-undo')); })() : false,
+              };
+            })()`);
+            ok(
+              `T38 删除后弹出可点的「撤销」(前=${before38} 删后=${afterDel} 显示=${toastInfo.shown} 有按钮=${toastInfo.hasBtn} pointerEvents=${toastInfo.pe} 命中按钮=${toastInfo.hit} 文案=${JSON.stringify(toastInfo.text)})`,
+              afterDel === before38 - 1 && toastInfo.shown === true && toastInfo.hasBtn === true && toastInfo.pe === 'auto' && toastInfo.hit === true
+            );
+            await cw38.webContents.executeJavaScript(
+              `(() => { const b = document.querySelector('#toast .toast-undo'); if (b) b.click(); return true; })()`
+            );
+            await sleep(1300);
+            const afterUndo = (settings.load().holidays.items || []).length;
+            const names38 = (settings.load().holidays.items || []).map((x) => x.name).join(',');
+            ok(
+              `T38 点「撤销」→ 被删条目恢复 (恢复后=${afterUndo} 条：${names38})`,
+              afterUndo === before38
+            );
+          }
+        } finally {
+          settings.update({ holidays: hdKeep38 });
+        }
+      }
 
       const failed = results.some(([c]) => !c);
       const verdict = failed ? 'TEST_FAIL' : 'TEST_OK';

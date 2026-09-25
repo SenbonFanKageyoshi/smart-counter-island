@@ -27,13 +27,19 @@ function daysLeft(target, now) {
 function nextHoliday(items, now) {
   const t = now instanceof Date ? now : new Date();
   const list = (Array.isArray(items) ? items : [])
-    .map((it) => ({ name: String((it && it.name) || '').trim(), at: parseDate(it && it.date) }))
+    .map((it) => ({
+      name: String((it && it.name) || '').trim(),
+      at: parseDate(it && it.date),
+      // skipKey 必须与 dueHoliday() 过滤 skipped 时用的键**完全同源**（见本文件下方），
+      // 否则「取消倒计时」写进去的键永远匹配不上，取消会静默失效。
+      skipKey: `${(it && it.name) == null ? '' : it.name}|${(it && it.date) == null ? '' : it.date}`,
+    }))
     .filter((it) => it.name && it.at)
     .filter((it) => it.at.getTime() >= t.getTime() - 0) // 当天也算（0 点后仍在今天）
     .sort((a, b) => a.at - b.at);
   if (!list.length) return null;
   const h = list[0];
-  return { name: h.name, at: h.at, days: daysLeft(h.at, t) };
+  return { name: h.name, at: h.at, days: daysLeft(h.at, t), skipKey: h.skipKey };
 }
 
 /** 该不该进计时坞：开启了节假日倒计时，且下一个节假日进入 leadDays 窗口 */

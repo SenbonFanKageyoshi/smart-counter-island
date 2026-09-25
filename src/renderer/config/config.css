@@ -14,11 +14,18 @@
   --bg2: rgba(248, 251, 255, 0.9);
   --card: var(--glass);
   --ink: #1c2b4a;
-  --muted: #66748f;
-  --accent: #3f6dff;
+  /* 对比度：--muted 原为 #66748f，在最暗壁纸下仅 3.92:1（低于 WCAG AA 正文 4.5:1）。
+     同一色相压深到 #57657f 后为 4.89:1，全背景达标；改这 1 行影响约 30 处提示/说明文字。 */
+  --muted: #57657f;
+  /* --accent 原为 #3f6dff，作正文（选中态文字、天数）时仅 3.61:1；压深到 #2d55e0 → 5.01:1。
+     它同时是主按钮底色，白字在其上由 4.34:1 提到 6.37:1。 */
+  --accent: #2d55e0;
   --line: rgba(120, 140, 180, 0.28);
   --input-bg: rgba(255, 255, 255, 0.62);
-  --copy-ink: #2b5bd7;
+  --copy-ink: #1f47b8;
+  /* 危险色：原先在 .btn.danger / .close-btn 里硬编码 #e05252，浅色玻璃上仅 3.18:1（低于 AA）。
+     #c62828 → 4.68:1，并收进变量，深色模式可单独取值。 */
+  --danger: #c62828;
 }
 
 /* 暗色玻璃（默认观感更好；body.dark 时启用） */
@@ -38,6 +45,7 @@ body.dark {
   --line: rgba(255, 255, 255, 0.13);
   --input-bg: rgba(255, 255, 255, 0.07);
   --copy-ink: #9db8ff;
+  --danger: #ff7b72;
 }
 
 
@@ -99,37 +107,41 @@ body.dark {
   justify-content: space-between;
 }
 .sched-copy { display: flex; gap: 6px; align-items: center; font-weight: 400; }
-.sched-copy select { width: auto; padding: 3px 6px; font-size: 11.5px; }
-.sched-copy .btn { font-size: 11px; padding: 3px 8px; }
+.sched-copy select { width: auto; padding: 6px; font-size: 12px; }
+.sched-copy .btn { font-size: 12px; padding: 6px 8px; }
 
-/* —— 复制模式（两次点击：源 → 目标） —— */
+/* —— 复制模式（两次点击：源 → 目标）——
+   强调色一律走 var(--accent) + color-mix 做透明度：原先硬编码的第二套蓝 #4f7cff
+   与 --accent(#3f6dff) 其实是两个不同的蓝，且深色模式下不会跟着换肤。 */
 .sched-copy-hint {
-  background: rgba(79, 124, 255, 0.12);
-  border: 1px solid rgba(79, 124, 255, 0.45);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--copy-ink);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  font-size: 12.5px;
+  font-size: 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
-.sched-copy-hint .sched-copy-cancel { margin-left: auto; font-size: 11px; padding: 3px 10px; }
-.sched-day.is-source, .sched-week.is-source { border-color: #4f7cff; box-shadow: 0 0 0 1px #4f7cff; }
-.sched-day.is-target, .sched-week.is-target { border-color: rgba(79, 124, 255, 0.55); border-style: dashed; }
+.sched-copy-hint .sched-copy-cancel { margin-left: auto; font-size: 12px; padding: 6px 10px; }
+.sched-day.is-source, .sched-week.is-source { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sched-day.is-target, .sched-week.is-target { border-color: color-mix(in srgb, var(--accent) 55%, transparent); border-style: dashed; }
 .sched-day-target, .sched-week-target {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: rgba(79, 124, 255, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   cursor: pointer;
   z-index: 3;
 }
 .sched-week { position: relative; }
-.sched-week-target { border-radius: 12px; background: rgba(79, 124, 255, 0.06); }
-.sched-day-target:hover, .sched-week-target:hover { background: rgba(79, 124, 255, 0.18); }
-.sched-copy-day, .sched-copy-week, .sched-copy-all { font-size: 11px; padding: 3px 8px; }
+.sched-week-target { border-radius: inherit; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.sched-day-target:hover, .sched-week-target:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+/* 时间表里最常用也最小的一排按钮：原来上下 padding 3px，可点高仅约 21px，
+   低于 WCAG 2.5.5 的 24×24 最低指针目标；改 6px 后约 27px。 */
+.sched-copy-day, .sched-copy-week, .sched-copy-all { font-size: 12px; padding: 6px 8px; }
 .sched-row {
   display: grid;
   grid-template-columns: 46px 1fr auto 1fr 1.1fr 30px;
@@ -144,8 +156,35 @@ body.dark {
 .sched-del { padding: 4px 6px; font-size: 11px; }
 .sched-add { margin-top: 2px; width: 100%; border-style: dashed; }
 
-.pos-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
-.pos-row select { width: 100%; }
+/* 行内控件行：位置选择、快速排课表单、按钮组等共 17 处复用。
+   原来是 grid-template-columns: 1fr auto auto（写死 3 列），一旦某行有 9 个子元素
+   （快速排课：5 个标签 + 4 个输入框），就会自动折成 3 行、标签与输入框完全错位，
+   且 1fr 列会把中文压成逐字竖排。改成可换行 flex：
+   宽度不够时**整项换到下一行**，而不是把文字压扁 —— 这样任何内容都不会错位或竖排。 */
+.pos-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pos-row > * { flex: 0 1 auto; min-width: 0; }
+/* 下拉框吃掉剩余宽度；按钮/标签/输入框按内容定宽且不压缩、不拆行 */
+.pos-row select { flex: 1 1 160px; width: auto; }
+.pos-row .btn { flex: 0 0 auto; white-space: nowrap; }
+.pos-row > label,
+.pos-row > .small { flex: 0 0 auto; white-space: nowrap; }
+/* 「标签 + 输入框」成对绑定：flex 换行是按项断开的，
+   不绑成一组就会出现「分·课间」在上一行、它的输入框被甩到下一行。 */
+.pos-row .pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.pos-row input[type="number"],
+.pos-row input[type="time"] { flex: 0 0 auto; width: 86px; }
 .pos-xy { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
 .pos-xy input { width: 74px; }
 
@@ -181,21 +220,10 @@ header#titlebar {
   box-shadow: 0 1px 0 var(--glass-hi) inset;
   cursor: default;
 }
-.logo {
-  width: 40px; height: 40px; border-radius: 13px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 22px;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.85), rgba(150, 180, 255, 0.55));
-  border: 1px solid var(--glass-line);
-  box-shadow: 0 6px 18px rgba(63, 109, 255, 0.22), 0 1px 0 var(--glass-hi) inset;
-}
-body.dark .logo, body.dark .about-logo {
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.16), rgba(120, 160, 255, 0.18));
-  border-color: var(--glass-line);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 0 var(--glass-hi) inset;
-}
-.title h1 { font-size: 16.5px; letter-spacing: 0.2px; }
-.title p { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+/* .logo / .about-logo 规则已删除：index.html 里没有这两个类（死代码），
+   且它们是全页仅剩的装饰性蓝色渐变与彩色投影，与"去掉装饰图标"的既有规范冲突。 */
+.title h1 { font-size: 16px; letter-spacing: 0.2px; }
+.title p { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
 /* 顶栏搜索：过滤当前页（也可跨页跳到命中项） */
 .search-wrap {
@@ -244,8 +272,32 @@ body.dark .logo, body.dark .about-logo {
   transform: translateY(-6px);
   transition: opacity 0.25s, transform 0.25s;
   pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(8, 16, 40, 0.18);
 }
 .toast.show { opacity: 1; transform: translateY(0); }
+/* 带「撤销」按钮时必须能接收点击 —— 原来固定 pointer-events:none，按钮会点不到 */
+.toast.undoable { pointer-events: auto; }
+.toast-undo {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease-out;
+}
+.toast-undo:hover { background: rgba(255, 255, 255, 0.32); }
+.toast-undo:active { background: rgba(255, 255, 255, 0.42); }
 
 /* —— 左侧导航：分组 + 图标 + 选中态高光 —— */
 nav#tabs {
@@ -402,8 +454,15 @@ textarea::placeholder { color: var(--muted); }
 .opacity-row { display: grid; grid-template-columns: 46px 1fr; gap: 6px 10px; align-items: center; font-size: 13px; color: var(--muted); }
 .opacity-row span { text-align: right; }
 
-.radio-row { display: flex; gap: 18px; font-size: 14px; margin-top: 4px; }
-.radio-row label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+/* 单选/多选行：必须允许换行，且每个选项**不可被压缩**。
+   否则一行放不下时 flex 会压缩各 label，中文被逐字拆行成竖排（"自 动"），完全不可读。 */
+.radio-row { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 14px; margin-top: 4px; }
+.radio-row label {
+  display: flex; align-items: center; gap: 5px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 
 /* 事件列表 */
 .toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }

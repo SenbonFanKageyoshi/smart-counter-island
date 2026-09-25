@@ -32,6 +32,10 @@ const PILL = {
   zoom: { w: 400, h: 400 },    // 倒计时窗口基准（实际按屏幕高 1/5 动态缩放，见 zoomSize）
   notify: { w: 500, h: 104 },  // 系统通知：标题+内容+免打扰按钮（黑底白字）
   dock: { w: 500, h: 104 },    // 计时坞：黑底白字，效果同通知（节假日倒计时用）
+  dockChips: { w: 560, h: 158 }, // 计时坞**操作页**（暂停/取消）：环形进度 + 数字 + 芯片行
+  // 计时坞**创建页**：只有一行（时间 + 游标尺 + 两个大按钮），所以窗口收紧到刚好贴合刻度 ——
+  // 之前复用 158 的目标高度，底部留了 30px 空白。12+52+54+10 = 128。
+  dockPicker: { w: 560, h: 128 },
   corner: { w: 180, h: 72 },   // 角落卡片：已从所有用户入口移除（内部状态，仅供几何自检）
   progress: { w: 0, h: 16 },   // 全屏授课：屏幕顶部倒计时进度条（宽度 = 工作区整宽）
 };
@@ -40,7 +44,7 @@ const PILL = {
     取值推导：细条本体 116 + 禁区 + 槽位 = 229，内容整行 163 居中 → 整行右缘 = pillW/2 + 81.5；
     chip 左缘 = pillW - 6 - chipW（chipW≈65）。两者不重叠要求 chipW ≤ pillW/2 - 87.5，
     pillW = 229 + 88 = 317 → 允许 chipW ≤ 71 ✅（留 ~6px 余量）。 */
-const WEATHER_SLOT_W = 88;
+// （原 WEATHER_SLOT_W = 88 已移除：天气只在盖板显示，细条不再预留天气槽）
 
 /** 各状态的圆角半径（DIP；strip/expanded 为胶囊 = 高度一半，与渲染层 CSS 一致）。
     progress 用 0：贴屏幕边，Win32 区域取整窗矩形，形状交给 CSS。 */
@@ -149,15 +153,25 @@ function decideState(input) {
     mode, smart, hideOnMaximized,
     expandIdleSec, zoomIdleSec, zoomAllowed, zoomCooldown, holding, hasCountdown,
     fullscreenState = 'strip', // 全屏授课时的目标形态：'strip' | 'progress'
-    dockOn = false, // 计时坞到点（节假日倒计时进入窗口期）
+    dockInteractive = false, // 计时坞正处于「创建页 / 操作页」（仅由长按进入的一次性交互）
+    hasTimer = false, // 是否有正在走的短时计时
     expandedSinceMs = 0, // 横幅（expanded）已持续展示的毫秒数；非横幅状态为 0
   } = input;
 
   // 手动操作保持期：优先于一切（否则手动放大的大屏会被立刻拉回）
   if (holding) return null;
 
-  // 没有计时时间（无有效事件）：锁定灵动岛；但计时坞讲的是节假日（与事件无关），仍要能显示
-  if (!hasCountdown) return mode === 'dock' || dockOn ? 'dock' : 'strip';
+  // 计时坞**只在长按进入的交互期间**显示（创建页 / 操作页）。
+  // 它不再是可常驻的手动模式 —— 程序启动时一定回到灵动岛。
+  if (dockInteractive) return 'dock';
+
+  // 计时进行中：计时**只显示在灵动岛**（左秒表 + 右剩余），不进入大窗口。
+  // 用户明确要求：「展开之后如果有计时事件，这个计时要显示在灵动岛上，而不是大窗口显示。」
+  // 所以计时期间任何展开（拖拽/托盘/驻留模式/闲置）都保持灵动岛形态。
+  if (hasTimer) return 'strip';
+
+  // 没有计时时间（无有效事件）：锁定灵动岛
+  if (!hasCountdown) return 'strip';
 
   // 全屏遮挡：锁定为配置的形态（默认灵动岛；可改成右上角卡片 / 顶部进度条）+ 鼠标穿透，
   // 不响应任何操作/不唤起（含手动隐藏、固定模式）
@@ -167,8 +181,9 @@ function decideState(input) {
     return 'strip';
   }
 
-  // 手动「计时坞」：与「大窗口驻留」同级的手动模式，常驻显示
-  if (mode === 'dock') return 'dock';
+  // 注：这里原有 `if (mode === 'dock') return 'dock';` —— 「计时坞」曾是可常驻的手动模式。
+  // 但长按进入时会把它写进 settings.manual.mode，于是**下次启动直接停在计时坞**
+  // （用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。现已改为只在长按交互期显示。
 
   // 手动隐藏：始终灵动岛，悬浮不唤起（避免"鼠标移上去就展开横幅"）
   if (mode === 'hidden') {
@@ -190,8 +205,9 @@ function decideState(input) {
   // 关闭智能：不自动切换，保持手动控制
   if (!smart) return null;
 
-  // 节假日倒计时到点 → 计时坞（闲时展示；不打断手动模式/悬停/全屏/最大化）
-  if (dockOn) return 'dock';
+  // 计时坞**只用于用户手动设置的计时**：不再因节假日到点自动弹出。
+  // （历史上这里有一条 `if (dockOn) return 'dock'`，但 decideState 的调用方从未传入
+  //   dockOn，它恒为 false —— 是死代码，却让人以为"坞会被自动占用"。现已彻底移除。）
 
   // 前台窗口最大化：保持灵动岛（不展开遮挡教学/演示内容）
   if (mode !== 'pinned' && hideOnMaximized && maximized) {
@@ -216,6 +232,7 @@ class Island {
     this.state = 'strip'; // 默认窗口 = 灵动岛（横幅模式已去掉；闲置逻辑会按设置自己放大）
     this.currentOpacity = 0.9;
     this.notifySize = null;   // 通知展示框自适应尺寸（渲染器按内容测量上报）
+    this.stripSize = null;    // 细条/横幅左右两瓣实测宽度（同上），窗口宽度据此自适应
     this.zoomWidth = 0;       // 倒计时窗口宽度（渲染器按文字内容测量上报；0 = 用默认宽度）
     this.fullscreen = false;  // 最近一次探针检测是否处于全屏遮挡（全屏锁定灵动岛）
     this.lastLi = 0;          // 最近一次探针报告的最后输入时刻（用于检测"有操作"）
@@ -260,13 +277,14 @@ class Island {
     this.notifyDndUntil = 0;        // 免打扰截止时间（至下课）
     this.lastToasts = new Set();    // 最近一次探针报告的通知（hwnd 集合）
     this.lastToastSig = new Map();  // hwnd → 最近一次报告文本（文本变化 = 新通知，兼容复用窗口的 QQ NT）
+    this.lastNotifyAt = 0;          // 上一条系统通知的展示时刻（节流用，防聊天刷屏时岛一直闪）
     this.mousePT = false;           // 当前是否已开启鼠标穿透（全屏遮挡时）
     this.lastWeatherSig = '';       // 最近一次已下发的天气签名（只有变化才重发状态，省 IPC）
     this.lastCoverSig = '';         // 最近一次已下发的盖板内容签名（天气 + 自定义文字）
-    this.dockOn = false;            // 节假日倒计时到点（该进计时坞）
     this.dockEdit = false;          // 计时坞快捷添加态（长按灵动岛进入）
     this.dockMenu = false;          // 计时坞操作页（倒计时进行中长按 → 暂停/取消）
-    this.dockText = null;           // 计时坞文案 { title, num, unit, date }
+    this.dockText = null;           // 计时坞文案 { title, num, unit, date }（手动模式）
+    this.dockPickSeconds = 900;      // 创建页当前选中的时长（分钟）——由渲染层上报，盖板左侧显示它
     this.lastDockSig = '';          // 计时坞文案签名（变了才重推状态）
   }
 
@@ -303,6 +321,7 @@ class Island {
       dock: this.dockPayload() || null,
       dockEdit: !!this.dockEdit, // 计时坞快捷添加态（墨里显示 +1/+3/+7/+30 天芯片）
       dockMenu: !!this.dockMenu, // 计时坞操作页（暂停/继续/取消）
+      timer: this.timerPayload(), // 短时倒计时（秒表）：null = 未开启
     };
   }
 
@@ -341,17 +360,26 @@ class Island {
     }
   }
 
-  /** 盖板内容载荷：天气 chip（位置=盖板上时）+ 自定义文字（模板 + 程序变量），推给盖板窗口自己画。
-      大窗口（zoom）展开时一律返回空 —— 盖板与展开的大窗口同时显示会重复、也抢注意力。 */
+  /** 盖板内容载荷。规则只有一条主线：
+   *   **只要不是灵动岛（strip）状态，盖板一律不显示任何内容**（没有例外）。
+   *   灵动岛状态下：计时中 → 显示计时剩余；否则 → 天气 chip + 自定义文字。 */
   coverContent(nowMs) {
-    const out = { weather: null, text: '', textSize: 11 };
-    if (this.state === 'zoom') return out;
+    const out = { weather: null, text: '', textSize: 11, mode: 'normal' };
     try {
+      // ★ 非灵动岛状态（大窗口 / 通知 / 计时坞…）→ 盖板全空。
+      //   之前把"计时中""设置中"两个分支放在这句**之前**，等于给非灵动岛状态开口子。
+      if (this.state !== 'strip') return out;
+
       const st = settings.load();
-      const cfg = st.weather || {};
       const cn = st.ui.cameraNotch || {};
       const tcfg = cn.text || {};
       out.textSize = Math.max(9, Math.min(18, parseInt(tcfg.size, 10) || 11));
+
+      // 计时进行中**也不显示**：灵动岛上已经有「秒表 + 剩余时间」，盖板再显示一遍就重复了。
+      const t = this.timerPayload();
+      if (t && t.active) return out;
+
+      const cfg = st.weather || {};
       const wmod = require('./weather');
       if (cfg.enabled !== false && cfg.showInIsland !== 'off' && cfg.pos === 'cover') {
         const w = wmod.snapshotForIsland(nowMs);
@@ -502,31 +530,17 @@ class Island {
   /** 细条常驻天气时给它预留的宽度：固定值（不依赖渲染层测量，几何可预期、不会来回抖）。
       细条本身 116 宽，禁区分割布局再占 zoneW+槽位，天气挂在最右边，所以总宽 = 三者之和 + 这一槽。
       位置：'right' 右端 / 'left' 左端 / 'cover' 盖板上（细条让位，chip 由盖板窗口自己画）。 */
-  weatherSlot(state) {
-    if (state !== 'strip') return 0;
-    try {
-      const cfg = settings.load().weather || {};
-      if (cfg.enabled === false) return 0;
-      if (cfg.showInIsland !== 'always') return 0; // 'banner' 不影响细条几何
-      if (cfg.pos === 'cover') return 0; // 画在盖板上，细条不需要额外宽度
-      return WEATHER_SLOT_W;
-    } catch (e) {
-      return 0;
-    }
+  weatherSlot() {
+    // 天气**只在盖板上显示**（用户定的方案 A）：细条不再为它预留任何宽度。
+    // 于是细条宽度恒定 = 本体 116 + 禁区 + 左右槽位，不再随天气开关在 229 ↔ 317 之间跳。
+    // ⚠️ 若盖板未启用（cameraNotch.enabled=false），天气就哪儿都不显示 —— 这是预期行为，
+    //    配置页已写明"天气需要先启用盖板"。
+    return 0;
   }
 
-  /** 天气在细条上的位置：'left' | 'right'（'cover' 表示不画在细条上，交给盖板窗口） */
-  weatherPos(state) {
-    if (state !== 'strip') return 'right';
-    try {
-      const cfg = settings.load().weather || {};
-      if (cfg.enabled === false || cfg.showInIsland !== 'always') return 'right';
-      if (cfg.pos === 'left') return 'left';
-      if (cfg.pos === 'cover') return 'cover';
-      return 'right';
-    } catch (e) {
-      return 'right';
-    }
+  /** 天气画在哪儿：永远 'cover'（细条窗口不画 chip，交给盖板窗口自己画） */
+  weatherPos() {
+    return 'cover';
   }
 
   /** 各状态「本体尺寸」：
@@ -534,12 +548,18 @@ class Island {
       - below 布局（横幅 / 大卡片）：高度 = 禁区深度 + 原内容高度（内容整体长到传感器下方）。 */
   pillSize(state, disp) {
     const d = disp || this.islandDisplay();
-    const s =
+    // 计时坞的创建页与操作页都比重态坞多一行，104px 高装不下，各自用更高的目标高度：
+    //   · 创建页（dockEdit）：只有一行（时间 + 游标尺 + 两个大按钮）→ dockPicker（贴合一整行）
+    //   · 操作页（dockMenu）：还有环形进度 + 大数字 + 标题 + 进度条 → dockChips（更高）
+    const dockTarget =
+      state === 'dock' ? (this.dockEdit ? PILL.dockPicker : this.dockMenu ? PILL.dockChips : null) : null;
+    let s =
       state === 'zoom'
         ? this.zoomSize(d)
         : state === 'notify' && this.notifySize
           ? this.notifySize
           : PILL[state] || PILL.strip;
+    if (dockTarget) s = { w: Math.max(s.w, dockTarget.w), h: Math.max(s.h, dockTarget.h) };
     const wx = this.weatherSlot(state);
     const spec = this.notchSpec();
     if (!spec.on) return wx ? { w: s.w + wx, h: s.h } : s;
@@ -551,9 +571,15 @@ class Island {
     if (layout === 'split') {
       // 中间让出禁区 + 左右各留一段空隙，内容紧挨着传感器两侧（不会一个贴最左一个贴最右）；
       // 常驻天气时再往右多留一格，天气 chip 挂在那里（整行仍然居中 → 两瓣位置不变）
+      // ⚠️ 2026-09-25：曾改成"按实测左右瓣宽自适应"来消除某一侧的多余空白，但实测发现
+      //   · 天气 chip **不在** .nb-r 里（它是独立槽位），只量两瓣会漏掉它 → 细条偏窄；
+      //   · 宽度由渲染层异步上报，与当帧渲染差一拍 → 过渡瞬间内容会滑进禁区带（被盖板压住）。
+      //   所以先退回固定公式。要做自适应得先解决这两点（见 PRINCIPLES / 待办）。
       return { w: s.w + Math.round(spec.zone.w) + spec.slotLeft + spec.slotRight + wx, h: Math.max(s.h, zoneDepth) };
     }
     // below：上半截留给传感器（撑高，含额外空隙），内容在下方保留原本高度
+    // ⚠️ 这里**不能**用细条实测宽度：这条分支服务的是横幅/大窗口/通知，
+    //    它们的宽度各有各的来源（zoomSize / notifySize），套细条的值会把大窗口压扁。
     const w = Math.max(s.w, Math.round(spec.zone.w) + spec.slotLeft + spec.slotRight) + wx;
     return { w, h: zoneDepth + spec.slotBelow + s.h };
   }
@@ -625,6 +651,28 @@ class Island {
   }
 
   /** 倒计时窗口宽度随文字内容调整：渲染器测量后上报 */
+  /** 细条/横幅：左右两瓣的实测宽度（渲染器上报）。
+      窗口宽度 = 左瓣 + 右瓣（再叠加盖板禁区与槽位），**不再用写死的"本体 116 + 天气槽 88"** ——
+      否则一侧内容少时，居中布局会在两侧各留一块等宽空白（"某一侧空白过大"）。 */
+  setStripSize(l, r) {
+    const nl = Math.max(0, Math.round(Number(l) || 0));
+    const nr = Math.max(0, Math.round(Number(r) || 0));
+    if (nl === 0 && nr === 0) return; // 还没量出来，别把窗口压没
+    const cur = this.stripSize;
+    if (cur && cur.l === nl && cur.r === nr) return;
+    this.stripSize = { l: nl, r: nr };
+    // 只在细条/横幅两态生效（通知/大窗口/计时坞的几何一律不动）
+    if ((this.state === 'strip' || this.state === 'expanded') && this.win && !this.win.isDestroyed()) {
+      try {
+        const target = this.computeBounds(this.state, this.islandDisplay());
+        if (target && (target.w !== this.win.getBounds().width || target.h !== this.win.getBounds().height)) {
+          this.animating = false;
+          this.win.setBounds(target);
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
+
   setZoomWidth(w) {
     if (!(w > 0)) return;
     const disp = this.islandDisplay();
@@ -959,7 +1007,9 @@ class Island {
     this.sendState(target);
     // 盖板内容联动：大窗口展开时盖板不显示任何内容（避免与大窗口里的信息重复/打架）
     this.pushCoverContent(true);
-    // 大屏（纯展示）、角落卡片、顶部进度条与完全透明的灵动岛：不拦截鼠标/触摸（穿透）
+    // 角落卡片 / 顶部进度条（全屏授课的纯展示形态）、大窗口与完全透明的灵动岛：
+    // 不拦截鼠标/触摸（穿透）。大窗口是纯展示态 —— 底部那排「固定/设置/菜单/收起」按钮
+    // 按用户要求已移除，所以它不再需要接收点击（穿透后也不会挡住桌面操作）。
     const streaming = state === 'corner' || state === 'progress';
     const ignore = state === 'zoom' || streaming || (state === 'strip' && opacity <= 0.01);
     if (this.win && !this.win.isDestroyed()) this.win.setIgnoreMouseEvents(ignore);
@@ -1000,6 +1050,20 @@ class Island {
   }
 
   sendState(winBoundsOverride) {
+    // 计时坞「创建页/常态」切换会改变窗口应有尺寸（创建页多一行刻度与按钮）。
+    // dockEdit 由多条路径改写（长按进入、开始/取消/加事件退出），逐处补 resize 容易漏，
+    // 所以在这里统一对账：dock 态下发现当前窗口尺寸与 pillSize 给的不一致就动画过去。
+    try {
+      if (this.state === 'dock' && this.win && !this.win.isDestroyed() && !this.dragging) {
+        const want = this.computeBounds('dock', this.islandDisplay());
+        const cur = this.win.getBounds();
+        if (Math.abs(cur.width - want.width) > 1 || Math.abs(cur.height - want.height) > 1) {
+          this.animateBounds(want);
+        }
+      }
+    } catch (e) {
+      /* 几何对账失败不影响状态推送 */
+    }
     this.send('island:state', this.getStatePayload(winBoundsOverride));
   }
 
@@ -1036,64 +1100,71 @@ class Island {
   }
 
   /**
+   * 短时倒计时（倒计时坞里用对数刻度选好后开始）：
+   *   { active, endsAt, totalMs, pausedLeftMs, label }；active=false → 返回 null。
+   * 结束后自动清掉（避免残留 00:00 卡在岛上）并发一条通知。
+   */
+  timerPayload() {
+    try {
+      const st = settings.load();
+      const t = st.timer || {};
+      if (t.active !== true) return null;
+      const paused = typeof t.pausedLeftMs === 'number';
+      const left = paused ? t.pausedLeftMs : Math.max(0, (t.endsAt || 0) - Date.now());
+      if (!paused && left <= 0) {
+        settings.update({ timer: { active: false, endsAt: 0, totalMs: 0, pausedLeftMs: null } });
+        if (this.notifyTimerDone !== true) {
+          this.notifyTimerDone = true;
+          setTimeout(() => {
+            this.notifyTimerDone = false;
+          }, 5000);
+          // ⚠️ 这里原先是 `if (this.showNotify)` —— 本类**没有** showNotify 成员
+          //    （正确方法是 showNotification，签名是位置参数），全仓也从无赋值，
+          //    于是条件恒为 false：倒计时走到 00:00 后静默消失，不弹窗、不出声，
+          //    等于击穿了计时器唯一的「到点」承诺。现在改调真正的方法。
+          //    并且**有意穿透免打扰**：这是用户自己设的计时，与"免打扰"要挡的
+          //    第三方系统通知不同（对齐 iOS 闹钟不受专注模式影响的惯例）。
+          this.showNotification('倒计时结束', t.label ? `${t.label}到了` : '时间到了', { alert: true });
+        }
+        return null;
+      }
+      return { active: true, endsAt: paused ? 0 : t.endsAt || 0, totalMs: t.totalMs || 0, leftMs: left, paused, label: t.label || '' };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * 计时坞文案（黑底白字那一栏显示什么）。
-   *  ① 节假日倒计时到点 → 节假日文案（主用途）；
-   *  ② 手动「计时坞」模式但眼下没有节假日 → 退回主事件倒计时，保证坞里永远有内容（不会是空栏）；
-   *  ③ 都没有 → null（渲染层用占位文案兜底）。
+   * 计时坞 = **手机时钟那样的倒计时器**：长按灵动岛 → 选时长 → 开始 → 到点提醒。
+   * 因此这里只返回**用户自己设的那个计时**的状态；不再自动挑选节假日或事件来显示。
+   * 没有正在跑的计时 → null（渲染层显示创建页）。
    * 注意：这个方法**必须存在** —— 状态载荷里会调用它，缺了会在每次推送状态时抛异常。
    */
   dockPayload(nowMs) {
-    const t = nowMs ? new Date(nowMs) : new Date();
     try {
-      const hd = require('./holiday');
-      const st = settings.load();
-      const paused = st.ui && st.ui.dockPaused && typeof st.ui.dockPaused.leftMs === 'number' ? st.ui.dockPaused : null;
-      const due = hd.dueHoliday(st, t);
-      if (due) {
-        const d = hd.dockText(due);
-        d.key = `holiday:${due.name}|${due.at.toISOString().slice(0, 10)}`;
-        d.leftMs = Math.max(0, due.at.getTime() - t.getTime());
-        if (paused && paused.key === d.key) {
-          d.leftMs = paused.leftMs;
-          d.num = String(Math.max(0, Math.ceil(paused.leftMs / 86400000)));
-          d.paused = true;
-        }
-        // iOS 倒计时那种环形进度：距离越近填得越满（无阈值时用 30 天做参考窗口）
-        const lead = Math.max(0, Math.min(3650, parseInt(st.holidays && st.holidays.leadDays, 10) || 0)) || 30;
-        d.pct = Math.max(0, Math.min(1, 1 - due.days / lead));
-        d.at = due.at.getTime();
-        d.kind = 'holiday';
-        return d;
-      }
-      if (st.manual.mode !== 'dock') return null;
-      // 手动计时坞：没有节假日到点 → 显示下一个事件
-      const now = t.getTime();
-      const next = (st.events || [])
-        .map((e) => {
-          if (!e || !e.date) return null;
-          const raw = String(e.date || '').trim();
-          const at = new Date(/T/.test(raw) ? raw : `${raw}T00:00:00`).getTime(); // 事件 date 可能已含时间
-          return Number.isFinite(at) ? { name: e.name || '事件', at, id: e.id || '' } : null;
-        })
-        .filter((x) => x && x.at >= now)
-        .sort((a, b) => a.at - b.at)[0];
-      if (!next) return null;
-      const left = Math.max(0, next.at - now);
-      const key = `event:${next.id || next.name}`;
-      const frozen = paused && paused.key === key ? paused.leftMs : null;
-      const eff = frozen == null ? left : frozen;
+      // 计时坞只服务「手机时钟式倒计时」：返回当前计时的状态，供操作页显示剩余时间与暂停/取消。
+      // 它**不再**自动挑选节假日或事件来显示 —— 坞里出现的永远是用户自己设的那个计时。
+      const t = this.timerPayload(); // { active, leftMs, totalMs, paused, label }
+      if (!t || !t.active) return null;
+      const total = t.totalMs > 0 ? t.totalMs : 1;
+      const sec = Math.max(0, Math.floor(t.leftMs / 1000));
+      const p2 = (n) => String(n).padStart(2, '0');
+      const num =
+        sec >= 3600
+          ? `${Math.floor(sec / 3600)}:${p2(Math.floor((sec % 3600) / 60))}:${p2(sec % 60)}`
+          : `${p2(Math.floor(sec / 60))}:${p2(sec % 60)}`;
       return {
-        title: `距离 ${next.name}`,
-        num: String(Math.ceil(eff / 86400000)),
-        unit: '天',
+        title: t.label || '倒计时',
+        num,
+        unit: '',
         date: '',
-        pct: Math.max(0, Math.min(1, 1 - eff / (365 * 86400000))),
-        at: next.at,
-        kind: 'event',
-        id: next.id || '',
-        key,
-        leftMs: eff,
-        paused: frozen != null,
+        pct: Math.max(0, Math.min(1, 1 - t.leftMs / total)),
+        at: 0,
+        leftMs: t.leftMs,
+        paused: t.paused,
+        kind: 'timer',
+        key: 'timer',
       };
     } catch (e) {
       return null;
@@ -1139,20 +1210,8 @@ class Island {
     this.requestProbe();
     this.pushGeomIfChanged(); // 窗口移动/缩放时给 GPU 玻璃增量推送几何
     const st = settings.load();
-    // 节假日倒计时：到「还剩 leadDays 天」就点亮计时坞（文案变了才重推状态）
-    try {
-      const hd = require('./holiday');
-      const due = hd.dueHoliday(st, new Date());
-      const sig = due ? `${due.name}|${due.days}` : '';
-      this.dockOn = !!due;
-      this.dockText = due ? hd.dockText(due) : null;
-      if (sig !== this.lastDockSig) {
-        this.lastDockSig = sig;
-        this.sendState();
-      }
-    } catch (e) {
-      this.dockOn = false;
-    }
+    // 计时坞只在长按交互期显示，内容来自计时器本身（dockPayload）。
+    // 这里不再做节假日文案检测 —— 坞已经与节假日/事件解耦。
     const s = st.smart;
     const mode = st.manual.mode;
     const p = this.probe ? this.probe.last : null;
@@ -1297,9 +1356,15 @@ class Island {
       zoomCooldown: Date.now() < this.zoomCooldownUntil,
       holding,
       hasCountdown: this.hasCountdown(),
+      // 计时中：只在灵动岛显示计时，不展开大窗口（见 decideState 里的说明）
+      hasTimer: !!this.timerPayload(),
+      // 计时坞只在长按进入的交互期（创建页 / 操作页）保持显示；不常驻、不持久化
+      dockInteractive: !!(this.dockEdit || this.dockMenu),
       fullscreenState: this.fullscreenState === 'hide' || this.fullscreenState === 'none' ? 'strip' : this.fullscreenState,
       expandedSinceMs: this.state === 'expanded' ? Math.max(0, Date.now() - this.expandedAt) : 0,
     });
+    // 盖板只在灵动岛常态（且未计时）时显示天气/文字，其余一律空白；
+    // 状态切换时 setState 已经推过，这里不需要再按 tick 推。
     // 探针就绪后重试圆角区域（启动初期探针未就绪时曾回退为矩形，避免遮罩残留）
     if (!this.regionApplied && this.probe && this.probe.ready && this.probe.regionFileConsumed()) {
       this.applyRegion();
@@ -1412,7 +1477,23 @@ class Island {
       const parts = latest.split('|');
       const title = parts[1] || '系统通知';
       const body = parts.slice(2).join('|').trim();
-      if (!this.inDnd()) this.showNotification(title, body);
+      // —— 打断控制（默认接管系统通知时的三道闸）——
+      // 1) 全屏/授课中一律不弹系统通知：投影时任何聊天 Toast 冒出来盖住课件都很糟。
+      //    注意只挡"系统通知"，课堂/天气/关机提醒走各自的路径，不受这里影响。
+      if (this.fullscreen) return;
+      if (this.inDnd()) return;
+      // 2) 节流：探针每 0.35~0.7 秒采一次，聊天软件刷屏时会不停触发。
+      //    设一个最小间隔，把连续消息合并成一条，而不是让岛一直闪。
+      //    注意不能用 `x || 5000`：0 是"不节流"的合法取值，会被 || 当成 falsy 回退成 5 秒。
+      const nowMs = Date.now();
+      const rawGap = st.smart ? st.smart.notifyMinGapSec : undefined;
+      const gapMs = (typeof rawGap === 'number' && rawGap >= 0 ? rawGap : 5) * 1000;
+      if (gapMs > 0 && this.lastNotifyAt && nowMs - this.lastNotifyAt < gapMs) return;
+      this.lastNotifyAt = nowMs;
+      // 3) 一次采样里有多条时明确告知还有几条 —— 原来只显示最后一条、其余静默丢弃，
+      //    用户会以为消息没收到。
+      const extra = fresh.length - 1;
+      this.showNotification(title, extra > 0 ? `${body}${body ? ' ' : ''}（另有 ${extra} 条）` : body);
     }
   }
 
@@ -1511,15 +1592,21 @@ class Island {
         this.manualState('strip', 0);
         break;
       case 'longPress': {
-        // 长按灵动岛 → 启动计时坞并进入快捷添加态
-        this.setManual('dock');
-        this.dockEdit = true;
+        // 长按灵动岛 → 进计时坞（手机时钟式倒计时）。
+        //   · 有正在走的计时 → 操作页（暂停 / 继续 / 取消计时）
+        //   · 没有计时       → 创建页（选时长 → 开始）
+        // ⚠️ 这里**不能**用 setManual('dock')：它会把 manual.mode 写进设置并持久化，
+        //    于是下次启动 decideState 直接返回 'dock'，程序初始状态就变成了计时坞。
+        //    计时坞只是长按期间的一次性交互 —— 不常驻、不持久化，退出后自动回灵动岛。
+        const running = !!this.timerPayload();
+        this.dockEdit = !running;
+        this.dockMenu = running;
+        this.setState('dock');
         this.sendState();
-        // 再补一次推送：setManual → setState 会先发一次"dockEdit=false"的状态，
-        // 而 tick 在状态未变时不会重发 → 渲染层可能停在无芯片的那一帧。
-        // 这里等几何动画（约 550ms）结束后再推一次，保证芯片一定出来。
+        // 再补一次推送：几何动画期间渲染层可能停在上一帧，
+        // 等动画（约 550ms）结束后再推一次，保证目标页一定出来。
         setTimeout(() => {
-          if (this.dockEdit) this.sendState();
+          if (this.dockEdit || this.dockMenu) this.sendState();
         }, 700);
         break;
       }
@@ -1537,46 +1624,77 @@ class Island {
         break;
       }
       case 'dockDone':
+        // 取消创建页 → 收起计时坞，回灵动岛
         this.dockEdit = false;
+        this.dockMenu = false;
+        this.setState('strip');
+        this.pushCoverContent(true); // 盖板恢复日常内容
         this.sendState();
         break;
+      case 'dockPick':
+        // 创建页刻度变化：记下选中的分钟数 —— 盖板左边要显示"选中的时间"，
+        // 而选中的值掌握在渲染层（刻度控件）手里，所以由它上报。
+        this.dockPickSeconds = Math.max(5, parseInt(String(a.seconds), 10) || 900);
+        this.pushCoverContent(true);
+        break;
+      case 'timerStart': {
+        // 刻度选好时长 → 开始倒计时，并收起计时坞（回到灵动岛）
+        // 时长由游标尺给出（它可以无限往左拖），这里只做一个防呆上限，不再卡 24 小时
+        // 最短 5 秒（游标尺支持秒级），上限只做防呆
+        const ms = Math.max(5 * 1000, Math.min(365 * 24 * 3600 * 1000, parseInt(a.ms, 10) || 0));
+        settings.update({ timer: { active: true, endsAt: Date.now() + ms, totalMs: ms, pausedLeftMs: null, label: String(a.label || '') } });
+        this.dockEdit = false;
+        this.dockMenu = false;
+        // 注意：这里**不再** setManual('auto') —— 那会把用户原本选的手动模式
+        // （固定显示 / 隐藏成灵动岛 / 大窗口驻留）一并改成自动。坞只是一次性交互。
+        this.setState('strip');
+        this.sendState();
+        break;
+      }
+      case 'timerCancel':
+        settings.update({ timer: { active: false, endsAt: 0, totalMs: 0, pausedLeftMs: null } });
+        settings.update({ ui: { dockPaused: null } });
+        this.dockEdit = false;
+        this.dockMenu = false;
+        this.setState('strip');
+        this.sendState();
+        break;
+      case 'timerPause': {
+        const t = this.timerPayload();
+        if (t && !t.paused) settings.update({ timer: { pausedLeftMs: t.leftMs } });
+        this.dockMenu = false;
+        this.setState('strip');
+        this.sendState();
+        break;
+      }
+      case 'timerResume': {
+        const st1 = settings.load();
+        const t1 = st1.timer || {};
+        if (typeof t1.pausedLeftMs === 'number') {
+          settings.update({ timer: { endsAt: Date.now() + t1.pausedLeftMs, pausedLeftMs: null } });
+        }
+        this.dockMenu = false;
+        this.setState('strip');
+        this.sendState();
+        break;
+      }
       case 'dockMenu':
-        // 倒计时进行中长按 → 切到操作页（暂停 / 继续 / 取消）
+        // 计时进行中长按 → 操作页（暂停 / 继续 / 取消计时）
         this.dockEdit = false;
         this.dockMenu = true;
         this.sendState();
         break;
       case 'dockMenuClose':
+        // 操作页「返回」→ 收起计时坞回灵动岛（坞不再常驻，没有"回到坞本身"这一说）
+        this.dockEdit = false;
         this.dockMenu = false;
+        this.setState('strip');
         this.sendState();
         break;
-      case 'dockPause': {
-        const d = this.dockPayload();
-        if (d) settings.update({ ui: { dockPaused: { key: d.key, leftMs: d.leftMs, at: Date.now() } } });
-        this.dockMenu = false;
-        this.sendState();
-        break;
-      }
-      case 'dockResume':
-        settings.update({ ui: { dockPaused: null } });
-        this.dockMenu = false;
-        this.sendState();
-        break;
-      case 'dockCancel': {
-        const d = this.dockPayload();
-        if (d && d.kind === 'event' && d.id) {
-          settings.removeEvent(d.id);
-        } else if (d && d.kind === 'holiday') {
-          const st0 = settings.load();
-          const skipped = Array.isArray(st0.holidays && st0.holidays.skipped) ? st0.holidays.skipped : [];
-          settings.update({ holidays: { skipped: skipped.concat([d.key.replace(/^holiday:/, '')]) } });
-        }
-        settings.update({ ui: { dockPaused: null } });
-        this.dockMenu = false;
-        this.applySettings();
-        this.broadcastEvents();
-        break;
-      }
+      // 注：原 dockPause / dockResume / dockCancel 三个动作已移除。
+      // 计时坞现在只服务「手机时钟式倒计时」，不再显示事件/节假日，
+      // 因此操作页改为直接作用于计时器（渲染层发 timerPause / timerResume / timerCancel）。
+      // 这也顺带修掉了它们原先会删事件、写 holidays.skipped 的副作用。
       case 'zoom':
         // 全屏状态不允许其他窗口：不放大
         if (this.zoomAllowed() && !this.fullscreen) this.manualState('zoom', 6000);
@@ -2019,7 +2137,7 @@ class Island {
     const disp = this.positionDisplay();
     const bounds = this.computeBounds('strip', disp); // 启动即灵动岛（横幅模式已去掉）
     this.expandedAt = Date.now(); // 窗口以横幅形态创建：大屏计时从此刻起
-    this.win = new BrowserWindow({
+    this.win = require('./quiet').quiet(new BrowserWindow({
       ...bounds,
       show: false,
       frame: false,
@@ -2044,7 +2162,7 @@ class Island {
         enableWebSQL: false,
         v8CacheOptions: 'code', // 预编译 JS 缓存：二次启动省去解析/编译
       },
-    });
+    })); // ← 安静模式：自检/诊断/截图时窗口不可见，不在用户桌面上闪
     this.win.setAlwaysOnTop(true, 'screen-saver');
     // 截屏排除自身：Electron 的 setContentProtection 在 Windows 上即
     // SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)，由主进程（窗口所属进程）

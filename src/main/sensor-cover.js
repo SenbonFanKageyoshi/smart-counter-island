@@ -66,7 +66,7 @@ class SensorCover {
     // 无边框透明窗口 + 页面里一块 #cap（纯黑、圆角=窗口高的一半 = 胶囊）
     // show: true 直接显示：盖板不抢焦点（focusable:false），不需要等页面加载完再 show，
     // 否则冷启动/切屏那几百毫秒里会「有时看不到」。
-    const win = new BrowserWindow({
+    const win = require('./quiet').quiet(new BrowserWindow({
       x,
       y,
       width,
@@ -92,7 +92,7 @@ class SensorCover {
         backgroundThrottling: false,
         spellcheck: false,
       },
-    });
+    }));
     this.win = win;
     win.setAlwaysOnTop(true, 'screen-saver');
     // 鼠标穿透：盖板只负责遮，不接任何点击

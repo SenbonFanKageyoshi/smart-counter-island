@@ -6,7 +6,14 @@
 <title>Sensor Cover</title>
 <style>
   /* 传感器盖板：整窗一块纯黑胶囊（圆角 = 窗口高的一半 → 窄长就是胶囊，方形就是圆） */
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  /* user-select: none —— 盖板很窄，手/鼠标在上面滑动时会把文字选中（出现蓝色高亮），
+     既难看又像"拖拽选中"的误操作。盖板文字是纯展示，任何情况下都不该被选中。 */
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    user-select: none; -webkit-user-select: none;
+    cursor: default;
+  }
   #cap {
     width: 100%;
     height: 100%;
@@ -19,6 +26,7 @@
     padding: 0 6px;
     box-sizing: border-box;
     overflow: hidden;
+    user-select: none; -webkit-user-select: none;
   }
 
   /* 自定义文字（模板 + 程序变量，主进程渲染好文本后推下来） */
@@ -37,6 +45,43 @@
     max-width: 100%;
   }
   #txt:empty { display: none; }
+
+  /* —— 盖板上的计时显示 ——
+     mode=timer：盖板只显示计时剩余时间（居中）。
+     mode=set  ：左边显示创建页选中的时长，右边是确认 / 放弃。
+     盖板实际只有约 87px 宽，所以字号小、按钮做成小圆点，并两端对齐。 */
+  #cv-time, #cv-acts { display: none; color: #fff; }
+  #cap[data-mode="timer"] #cv-time,
+  #cap[data-mode="set"] #cv-time { display: inline-block; }
+  #cap[data-mode="set"] #cv-acts { display: inline-flex; }
+  #cv-time {
+    font: 700 12.5px/1.2 "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.1px;
+    white-space: nowrap;
+  }
+  #cv-acts { align-items: center; gap: 4px; }
+  #cv-acts button {
+    appearance: none; -webkit-appearance: none;
+    width: 18px; height: 18px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font: 700 11px/1 "Segoe UI", system-ui, sans-serif;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    transition: transform 0.1s ease-out, background 0.14s ease-out;
+  }
+  #cv-acts button:active { transform: scale(0.9); }
+  #cv-ok { background: #34c759 !important; border-color: #34c759 !important; color: #06210d !important; }
+  /* set：左时间、右按钮（两端对齐）；timer：剩余时间居中 */
+  #cap[data-mode="set"] { justify-content: space-between; }
+  #cap[data-mode="timer"] { justify-content: center; }
+  /* 这两种模式下盖板不再显示天气与自定义文字 */
+  #cap[data-mode="set"] .wx, #cap[data-mode="timer"] .wx { display: none !important; }
+  #cap[data-mode="set"] #txt, #cap[data-mode="timer"] #txt { display: none !important; }
 
   /* —— 可选：把天气画在盖板上（「天气位置 = 盖板上」时主进程推下来）—— */
   .wx { display: none; align-items: center; gap: 3px; color: #fff; }
@@ -67,11 +112,20 @@
 </style>
 </head>
 <body>
-  <div id="cap">
+  <div id="cap" data-mode="normal">
     <span class="wx" id="wx" title="">
       <b class="wx-temp" id="wx-temp"></b>
     </span>
     <span id="txt"></span>
+    <!-- 盖板上的计时相关显示（两种模式共用左侧那一个位置）：
+         · mode=timer —— 计时剩余时间
+         · mode=set   —— 创建页当前选中的时长 -->
+    <span id="cv-time"></span>
+    <!-- mode=set 时的右侧确认 / 放弃（开始 / 取消） -->
+    <span id="cv-acts">
+      <button id="cv-ok" type="button" title="开始">✓</button>
+      <button id="cv-no" type="button" title="取消">✗</button>
+    </span>
   </div>
   <script src="sensor.js"></script>
 </body>

@@ -13,7 +13,56 @@ let wxFxKind = '';
 let dock = null; // 计时坞文案载荷
 let dockEdit = false; // 计时坞快捷添加态
 let dockMenu = false; // 计时坞操作页（倒计时进行中长按）
+let timer = null; // 短时倒计时载荷 { active, leftMs, totalMs, paused }
 let lastDockSig = ''; // 计时坞渲染签名：相同就不重建 DOM（防闪）
+/* 计时坞的时长控件 = **游标尺**：中间一条固定不动的指示线，刻度尺在它下面左右滑动。
+   内部统一用**秒**表示时长，换算分三段（保证 1 分钟以下是秒级、常用区间是分钟级、超大值不费手）：
+     · 5 秒 ~ 1 分钟  —— 每格 2 秒（1 分钟时继续往左滑就进入这一段）
+     · 1 分钟 ~ 6 小时 —— 每格 2 分钟（16px/格 → 8px/分钟，拖动够精细）
+     · 超过 6 小时     —— 转**对数**（每格 ×1.25）
+   起始值 15 分钟。 */
+const RULER_PX_PER_STEP = 16;          // 每格宽度（px）
+const SEC_MIN = 5;                     // 最短 5 秒
+const SEC_BOUND = 60;                  // 分钟段的下界 = 1 分钟
+const SEC_PER_STEP_LOW = 2;            // 1 分钟以下：每格 2 秒（这一段要够宽，甩一下才不会冲出去）
+const SEC_PER_STEP = 120;              // 1 分钟 ~ 6 小时：每格 2 分钟
+const LINEAR_MAX_SEC = 21600;          // 线性段上限 = 6 小时
+const P_AT_6H = (LINEAR_MAX_SEC - SEC_BOUND) / SEC_PER_STEP;       // 6 小时对应的格数 = 179.5
+const P_MIN = -(SEC_BOUND - SEC_MIN) / SEC_PER_STEP_LOW;          // 最短 5 秒对应的格数 = -11
+const RULER_RATIO = 1.25;              // 对数段的每格倍率
+
+/** 秒 → 格数（指示线位置）。与 rulerSeconds 互为反函数 */
+function rulerStepOf(seconds) {
+  const s = Math.max(SEC_MIN, seconds);
+  if (s <= SEC_BOUND) return (s - SEC_BOUND) / SEC_PER_STEP_LOW;
+  if (s <= LINEAR_MAX_SEC) return (s - SEC_BOUND) / SEC_PER_STEP;
+  return P_AT_6H + Math.log(s / LINEAR_MAX_SEC) / Math.log(RULER_RATIO);
+}
+/** 格数 → 秒 */
+function rulerSeconds(step) {
+  if (step <= 0) return Math.max(SEC_MIN, Math.round(SEC_BOUND + step * SEC_PER_STEP_LOW));
+  if (step <= P_AT_6H) return Math.round(SEC_BOUND + step * SEC_PER_STEP);
+  return Math.round(LINEAR_MAX_SEC * Math.pow(RULER_RATIO, step - P_AT_6H));
+}
+
+let pickSeconds = 15 * 60; // 默认 15 分钟
+let rulerStep = rulerStepOf(pickSeconds); // 指示线当前对应的格数
+/* ✓ / ✗ 用 SVG 画，不用文字字形 —— 那两个字符在不同字体下粗细、比例都不一样，
+   渲染出来歪歪扭扭。这里统一成 24 网格、等宽描边、方头方角，方方正正。 */
+const SVG_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5 L9.5 18 L20 6.5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square" stroke-linejoin="miter"/></svg>';
+const SVG_CROSS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5 L17.5 17.5 M17.5 6.5 L6.5 17.5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square"/></svg>';
+function fmtMinutes(m) {
+  if (m < 60) return `${m} 分钟`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm ? `${h} 小时 ${mm} 分` : `${h} 小时`;
+}
+/** 时长显示（秒为单位）：1 分钟以下用「秒」，其余走 fmtMinutes */
+function fmtDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} 秒`;
+  return fmtMinutes(Math.round(s / 60));
+}
 /* 长按灵动岛（默认 700ms）：启动计时坞并进入快捷添加态 */
 let longPressTimer = null;
 let longPressFired = false;
@@ -130,6 +179,10 @@ window.island.onState((s) => {
   dock = s.dock || null; // 计时坞文案（节假日倒计时）
   const dockMenuChanged = dockMenu !== !!s.dockMenu;
   dockMenu = !!s.dockMenu; // 计时坞操作页（暂停/继续/取消）
+  timer = s.timer || null; // 短时倒计时（秒表）：null = 未开启
+  // 记下载荷到达时刻：逐秒 tick 用它做本地外推（主进程不是每秒都推）。
+  // paused 时不需要外推（剩余时间是冻结值），留空即可。
+  if (timer && timer.active) timer._at = Date.now();
   const dockEditChanged = dockEdit !== !!s.dockEdit;
   dockEdit = !!s.dockEdit; // 计时坞快捷添加态（长按灵动岛进入）
   if (dockEditChanged || dockMenuChanged) setTimeout(() => { try { render(); } catch (e) { /* ignore */ } }, 0);
@@ -742,6 +795,28 @@ function currentInfo() {
   };
 }
 
+/* ---------- 短时倒计时（秒表） ---------- */
+
+/** 剩余时间文本：不足 1 小时 -> mm:ss；否则 h:mm:ss（等宽数字） */
+function fmtTimer(ms) {
+  const sec = Math.max(0, Math.floor((ms || 0) / 1000));
+  const p = (n) => String(n).padStart(2, '0');
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}:${p(Math.floor((sec % 3600) / 60))}:${p(sec % 60)}`;
+  return `${p(Math.floor(sec / 60))}:${p(sec % 60)}`;
+}
+
+/** 绿色线描秒表（纯 SVG 画出来，不用字体图标：表盘 + 冠 + 指针） */
+function stopwatchSvg() {
+  return (
+    '<svg class="watch" viewBox="0 0 24 24" aria-hidden="true">' +
+    '<circle cx="12" cy="13.5" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/>' +
+    '<path d="M12 13.5 L12 9.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+    '<path d="M9.6 3.6 h4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+    '<path d="M12 3.6 v1.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+    '</svg>'
+  );
+}
+
 /* ---------- 天气 chip 与整岛天气特效 ---------- */
 
 /**
@@ -751,7 +826,11 @@ function currentInfo() {
  */
 function wxChipHtml() {
   if (!weather || weather.show === false) return '';
-  // 「天气位置 = 盖板上」：天气已经在中间那块盖板上显示 → 岛内任何形态（含大窗口）都不再画，
+  // 天气**只在盖板上显示**（方案 A）：灵动岛**任何形态**都不再画 chip。
+  // 「细条上放哪儿」这个选项已从配置页移除，但老配置里可能还留着 pos:'left'/'right' ——
+  // 一律忽略：细条已经不再为天气预留槽位，chip 画上去会挤到盖板底下（盖板永久置顶，会把它压住）。
+  if (state === 'strip') return '';
+  // 「天气位置 = 盖板上」：天气已经在中间那块盖板上显示 → 岛内也不再画，
   // 否则同一份天气会出现两次（盖板一次、大窗口又一次）
   if (weather.pos === 'cover') return '';
   // 常驻（always）= 细条也显示；'banner' 只在横幅/大卡片显示（细条保持极简）
@@ -794,8 +873,30 @@ function setWxEffect(kind) {
 let shownPrimaryId = null; // 当前 DOM 展示的事件 id（轮播切换检测用）
 let shownUnit = ''; // 当前主时间单位（跨单位时需重建 DOM 以增删副行节点）
 
+/** 细条/横幅：把两瓣的实测宽度报给主进程（窗口宽度按内容自适应）。
+    必须在 DOM 插入且布局完成后量，所以由 render() 用 rAF 调度。 */
+function measureStripSize() {
+  if (state !== 'strip' && state !== 'expanded') return;
+  try {
+    const l = document.querySelector('.nb-l');
+    const r = document.querySelector('.nb-r');
+    let lw = l ? l.offsetWidth : 0;
+    let rw = r ? r.offsetWidth : 0;
+    if (!l && !r) {
+      // 没有盖板/非 split 布局：整行当一个左瓣量
+      const row = document.querySelector('.s-row') || document.querySelector('.e-row');
+      lw = row ? row.scrollWidth : 0;
+      rw = 0;
+    }
+    if (lw || rw) window.island.stripSize({ l: lw, r: rw });
+  } catch (e) { /* 量不出来不影响显示 */ }
+}
+
 function render() {
   const box = $('#content');
+  // 离开计时坞就清掉它的页面标识（否则样式会残留在其它形态上）
+  if (state !== 'dock') document.body.dataset.dockPage = '';
+  requestAnimationFrame(measureStripSize); // 细条/横幅：渲染完把内容宽度报上去
 
   // 系统通知优先渲染（不依赖倒计时事件是否存在）；操作按钮在弹窗下方 #dnd-bar
   if (state === 'notify') {
@@ -818,6 +919,16 @@ function render() {
   shownPrimaryId = info ? info.primary.id : null;
 
   if (state === 'strip') {
+    // 短时倒计时进行中：岛内内容被「左侧绿色线描秒表 + 右侧剩余时间」覆盖（原事件不再显示）。
+    // ⚠️ 这段必须放在 if (!info) 早退**之前**：没有配置任何倒计时事件时 info 为 null，
+    // 若先早退就会把计时覆盖整段吞掉 —— 表现就是岛上永远不出现秒表与剩余时间。
+    if (timer && timer.active) {
+      shownUnit = '';
+      const sL = `<span class="s-watch">${stopwatchSvg()}</span>`;
+      const sR = `<span class="s-num s-timer" data-timer-num>${fmtTimer(timer.leftMs)}</span>`;
+      box.innerHTML = `<div class="s-row">${notchRow(sL, sR)}</div>`;
+      return;
+    }
     // 细条：没有计时时间（无有效事件）时只显示纯黑胶囊，不渲染任何内容
     if (!info) {
       box.innerHTML = '';
@@ -839,25 +950,24 @@ function render() {
   }
 
   if (state === 'dock') {
-    // 计时坞（对标 iOS 倒计时）：环形进度 + 超大等宽数字 + 极小标签 + 细线性进度条
-    const d = dock || { title: '距离 节假日', num: '--', unit: '天', date: '', pct: 0, at: 0 };
+    // 计时坞 = **手机时钟式倒计时器**：环形进度 + 超大等宽数字 + 极小标签 + 细线性进度条。
+    // 内容来自 dockPayload()，它只返回"用户自己设的那个计时"的状态；没有计时则为 null。
+    const isTimer = !!(dock && dock.kind === 'timer');
+    const d = dock || { title: '倒计时', num: '--:--', unit: '', date: '', pct: 0, at: 0 };
     const pct = Math.max(0, Math.min(1, Number(d.pct) || 0));
-    const p2n = (n) => String(n).padStart(2, '0');
-    // 防闪：内容签名没变就不重建 DOM（每秒重建就是窗口一闪一闪的原因）
-    const sig0 = `${d.key || ''}|${d.num}|${d.unit}|${d.title}|${d.paused ? 1 : 0}|${dockEdit ? 1 : 0}|${dockMenu ? 1 : 0}|${pct.toFixed(3)}|${d.at ? 1 : 0}`;
-    if (sig0 === lastDockSig && box.querySelector('.dk-wrap')) return;
-    const leftMs = typeof d.leftMs === 'number' ? d.leftMs : d.at ? d.at - Date.now() : 0;
-    let num = d.num;
-    let unit = d.paused ? '天' : d.unit;
-    if (d.paused) {
-      // 暂停：显示冻结值，不走秒
-      num = d.num;
-      unit = '天';
-    } else if (d.at && !d.paused && leftMs <= 86400000 && leftMs > -1000) {
-      const sec = Math.max(0, Math.floor(leftMs / 1000));
-      num = `${p2n(Math.floor(sec / 3600))}:${p2n(Math.floor((sec % 3600) / 60))}:${p2n(sec % 60)}`;
-      unit = '';
-    }
+    // 防闪：内容签名没变就不重建 DOM（每秒重建就是窗口一闪一闪的原因）。
+    // 但进入/离开创建页或操作页必须**强制重建**：这两页的 DOM 结构与常态帧完全不同，
+    // 只靠签名比对会在「坞文案恰好没变」时命中旧签名而停在旧帧（创建页不渲染就是这么来的）。
+    const pickSig = dockEdit ? pickSeconds : '';
+    const sig0 = `${d.key || ''}|${d.num}|${d.unit}|${d.title}|${d.paused ? 1 : 0}|${dockEdit ? 1 : 0}|${dockMenu ? 1 : 0}|${pct.toFixed(3)}|${d.at ? 1 : 0}|${pickSig}`;
+    const needPicker = dockEdit && !box.querySelector('.dk-picker');
+    const needMenu = dockMenu && !box.querySelector('.dk-menu');
+    if (!needPicker && !needMenu && sig0 === lastDockSig && box.querySelector('.dk-wrap')) return;
+    // 计时器的剩余时间由 [data-timer-num] 的逐秒通道更新（见文件末尾的 setInterval），
+    // 这里直接用 payload 给的 num；旧的"天数 → 时:分:秒"换算属于事件倒计时语义，坞已不再使用。
+    const numAttr = isTimer ? 'data-timer-num' : 'data-dock-num';
+    const num = d.num;
+    const unit = d.unit || '';
     const R = 21;
     const C = 2 * Math.PI * R;
     const ring =
@@ -867,44 +977,70 @@ function render() {
       `</svg>`;
     let chips = '';
     if (dockMenu) {
-      // 倒计时进行中长按 → 这一页：暂停/继续 + 取消 + 返回
+      // 计时进行中长按 → 操作页：手机时钟式的计时控制（暂停/继续 · 取消计时 · 返回）。
+      // 这三个动作都直接作用于**计时器本身**，不再去删事件或跳过节假日 ——
+      // 计时坞已与事件/节假日解耦，只服务于用户自己设的那个倒计时。
       chips =
-        '<div class="dk-edit">' +
+        '<div class="dk-edit dk-menu">' +
         (d.paused
-          ? '<button class="dk-chip done" data-act="dockResume">继续</button>'
-          : '<button class="dk-chip done" data-act="dockPause">暂停</button>') +
-        '<button class="dk-chip danger" data-act="dockCancel">取消倒计时</button>' +
+          ? '<button class="dk-chip done" data-act="timerResume">继续</button>'
+          : '<button class="dk-chip done" data-act="timerPause">暂停</button>') +
+        '<button class="dk-chip danger" data-act="timerCancel">取消计时</button>' +
         '<button class="dk-chip ghost" data-act="dockMenuClose">返回</button>' +
         '</div>';
-    } else if (dockEdit) {
+    } else if (dockEdit || !dock) {
+      // 创建页：**左边显示设置的时间**，中间游标尺，右边两个方方正正的大号 ✓ / ✗。
+      // 顶部留出 padding 让整块落在盖板下方（盖板永久置顶，实测压在窗口 y=11~37）。
       chips =
-        '<div class="dk-edit">' +
-        '<button class="dk-chip" data-act="dockAdd" data-days="1">+1 天</button>' +
-        '<button class="dk-chip" data-act="dockAdd" data-days="3">+3 天</button>' +
-        '<button class="dk-chip" data-act="dockAdd" data-days="7">+7 天</button>' +
-        '<button class="dk-chip" data-act="dockAdd" data-days="30">+30 天</button>' +
-        '<button class="dk-chip ghost" data-act="config">自定义…</button>' +
-        '<button class="dk-chip done" data-act="dockDone">完成</button>' +
+        '<div class="dk-edit dk-picker">' +
+        '<div class="dk-pick-main">' +
+        `<span class="dk-pick-label" id="dk-pick-label">${ESC(fmtDuration(pickSeconds))}</span>` +
+        '<div class="dk-ruler" id="dk-ruler">' +
+        '<div class="dk-ruler-track" id="dk-track"></div>' +
+        '<div class="dk-ruler-needle" aria-hidden="true"></div>' +
+        '</div>' +
+        '<div class="dk-pick-acts">' +
+        '<button class="dk-big ok" data-act="timerStart" title="开始">' + SVG_CHECK + '</button>' +
+        '<button class="dk-big no" data-act="dockDone" title="取消">' + SVG_CROSS + '</button>' +
+        '</div>' +
+        '</div>' +
         '</div>';
     }
+    // 创建页（或坞里没有计时时的兜底页）：大数字显示**当前选中的时长**，
+    // 与手机时钟的计时器一致；进度环此时没有意义，留空。
+    const pickerShowing = !dockMenu && (dockEdit || !dock);
+    // 页面标识：供 CSS 把创建页排版成"设置时长为主角"（见 island.css 的 body[data-dock-page="picker"]）
+    document.body.dataset.dockPage = pickerShowing ? 'picker' : dockMenu ? 'menu' : '';
+    const pickMin = pickSeconds;
+    const shownNum = pickerShowing ? `${String(Math.floor(pickMin / 60)).padStart(2, '0')}:${String(pickMin % 60).padStart(2, '0')}` : num;
+    const shownUnit = pickerShowing ? '' : unit;
+    const shownTitle = pickerShowing ? '倒计时' : d.title;
+    const shownPct = pickerShowing ? 0 : pct;
     box.innerHTML =
       '<div class="dk-wrap">' +
       '<div class="dk-main">' +
       ring +
       '<div class="dk-text">' +
-      `<div class="dk-row"><span class="dk-num" data-dock-num>${ESC(num)}</span>${unit ? `<span class="dk-unit" data-dock-unit>${ESC(unit)}</span>` : ''}</div>` +
-      `<div class="dk-title">${ESC(d.title)}${d.paused ? '（已暂停）' : ''}</div>` +
+      `<div class="dk-row"><span class="dk-num" ${pickerShowing ? 'data-dock-num' : numAttr}>${ESC(shownNum)}</span>${shownUnit ? `<span class="dk-unit" data-dock-unit>${ESC(shownUnit)}</span>` : ''}</div>` +
+      `<div class="dk-title">${ESC(shownTitle)}${!pickerShowing && d.paused ? '（已暂停）' : ''}</div>` +
       '</div>' +
-      (d.date ? `<div class="dk-date">${ESC(d.date)}</div>` : '') +
+      (d.date && !pickerShowing ? `<div class="dk-date">${ESC(d.date)}</div>` : '') +
       '</div>' +
-      '<div class="dk-bar"><i style="width:${(pct * 100).toFixed(1)}%"></i></div>' +
+      `<div class="dk-bar"><i style="width:${(shownPct * 100).toFixed(1)}%"></i></div>` +
       chips +
       '</div>';
+    // 游标尺是动态生成的（刻度位置依赖容器宽度），必须在 DOM 插入之后再画一次
+    if (pickerShowing) requestAnimationFrame(rulerRender);
     lastDockSig = sig0;
     return;
   }
 
 
+
+  // 注：这里原本有一段「短时倒计时进行中 → 大窗口显示秒表 + 剩余时间」的分支。
+  // 按用户要求已移除：**计时只显示在灵动岛上**，大窗口不显示计时。
+  // 状态机侧也做了保证（decideState 在计时期间不返回 'zoom'，见 island.js 的 hasTimer 分支），
+  // 所以计时进行中根本不会进入大窗口形态。
 
   if (!info) {
     // 没有倒计时事件也照常显示天气（教室只想要天气时不该被空态吞掉）
@@ -961,6 +1097,7 @@ function render() {
   }
 
   // zoom 倒计时窗口（正方形 = 屏幕高 1/4；事件名在上方，中部突出主单位，副行更小单位）
+  // 注：计时进行中的 zoom 覆盖分支已提前到本函数上方（需在 if(!info) 早退之前），这里只处理事件倒计时。
   if (state === 'zoom') {
     const pillH = ($('#pill').offsetHeight || 300);
     const st = document.documentElement.style;
@@ -1279,26 +1416,142 @@ pill.addEventListener('contextmenu', (e) => {
   window.island.action({ type: 'menu' });
 });
 
-$('#buttons').addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-act]');
-  if (!btn) return;
-  window.island.action({ type: btn.dataset.act });
+// 计时坞内的控件：芯片按钮 + 创建页那两个大号 ✓/✗
+// （刻度不再可点 —— 它是滑动的游标尺，见 setRulerStep）
+$('#content').addEventListener('click', (e) => {
+  const chip = e.target.closest('.dk-chip, .dk-big');
+  if (chip) {
+    e.stopPropagation();
+    if (chip.dataset.act === 'timerStart') {
+      // 时长来自游标尺当前值（原先挂在按钮的 data-ms 上，现在刻度是连续滑动的）
+      window.island.action({ type: 'timerStart', ms: pickSeconds * 1000, label: fmtDuration(pickSeconds) });
+    }
+    else if (chip.dataset.days) window.island.action({ type: 'dockAdd', days: Number(chip.dataset.days) });
+    else window.island.action({ type: chip.dataset.act });
+  }
 });
 
-// 计时坞快捷添加芯片：点一下就新建对应天数的倒计时（不用打字）
-$('#content').addEventListener('click', (e) => {
-  const chip = e.target.closest('.dk-chip');
-  if (!chip) return;
-  if (chip.dataset.days) window.island.action({ type: 'dockAdd', days: Number(chip.dataset.days) });
-  else window.island.action({ type: chip.dataset.act });
-});
+/** 重绘游标尺：只画指示线附近可见的刻度。
+    刻度是"虚拟"的 —— 随滑动按需生成，所以可以一直滑，没有格数上限。
+    ⚠️ 刻度位置依赖容器宽度：坞窗口展开是带动画的，首次渲染时容器往往还处在
+    布局中间态（实测只有 ~270px，最终是 524px），那样算出来的刻度会挤在左边、对不上指示线。
+    所以这里同时挂一个 ResizeObserver，尺寸真正稳定后再重画一次。 */
+let rulerRO = null;
+let rulerROEl = null;
+function ensureRulerObserver(box) {
+  if (rulerROEl === box) return;
+  if (rulerRO) {
+    try { rulerRO.disconnect(); } catch (e) { /* ignore */ }
+  }
+  rulerROEl = box;
+  rulerRO = null;
+  if (typeof ResizeObserver === 'function' && box) {
+    rulerRO = new ResizeObserver(() => rulerRender());
+    rulerRO.observe(box);
+  }
+}
 
-// 通知内容中的按钮（免打扰至下课）
-$('#content').addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-act]');
-  if (!btn) return;
-  window.island.action({ type: btn.dataset.act });
-});
+function rulerRender() {
+  const box = document.getElementById('dk-ruler');
+  const track = document.getElementById('dk-track');
+  if (!box || !track) return;
+  ensureRulerObserver(box);
+  const w = box.clientWidth;
+  if (!(w > 0)) return; // 还没布局出来：等 ResizeObserver 回调再画
+  const half = w / 2; // 指示线固定在容器正中
+  const span = half / RULER_PX_PER_STEP + 1;
+  // ⚠️ from 不能钳到 0：1 分钟以下是**秒级区**（负格数），钳掉的话那段一根刻度都没有。
+  const from = Math.floor(rulerStep - span);
+  const to = Math.ceil(rulerStep + span);
+  let html = '';
+  for (let i = from; i <= to; i++) {
+    const x = half + (i - rulerStep) * RULER_PX_PER_STEP;
+    const major = i % 5 === 0;
+    html += '<i class="dk-tick' + (major ? ' major' : '') + '" style="left:' + x.toFixed(1) + 'px;height:' + (major ? 24 : 13) + 'px"></i>';
+  }
+  track.innerHTML = html;
+}
+
+/** 移动游标尺：step → 秒，更新标签并上报主进程。
+    下界是「最短 5 秒」（1 分钟时继续往左滑就进入秒级），**向上不封顶**。 */
+function setRulerStep(v) {
+  rulerStep = Math.max(P_MIN, v);
+  const s = rulerSeconds(rulerStep);
+  const changed = s !== pickSeconds;
+  pickSeconds = s;
+  rulerRender();
+  const lb = document.getElementById('dk-pick-label');
+  if (lb) lb.textContent = fmtDuration(s);
+  if (changed) window.island.action({ type: 'dockPick', seconds: s });
+}
+
+// 游标尺交互：按住左右拖动（松手带**惯性**继续滑）；滚轮也能调（桌面更顺手）。
+// ⚠️ 必须 stopPropagation —— 否则会触发灵动岛的长按 / 上下拖拽手势。
+(function () {
+  let dragging = false;
+  let lastX = 0;
+  let vel = 0;        // 估算速度（px/帧 ≈ 16.7ms）
+  let inertiaRAF = 0;
+
+  function stopInertia() {
+    if (inertiaRAF) cancelAnimationFrame(inertiaRAF);
+    inertiaRAF = 0;
+  }
+  /** 松手后按速度继续滑并逐渐减速 —— 就是"滑一下能滑一段"的手感 */
+  function startInertia() {
+    stopInertia();
+    let v = vel;
+    if (Math.abs(v) < 1.6) return; // 太慢就当没甩
+    const decay = 0.90;            // 每帧衰减
+    const tick = () => {
+      v *= decay;
+      if (Math.abs(v) < 0.35) { inertiaRAF = 0; return; }
+      setRulerStep(rulerStep - v / RULER_PX_PER_STEP);
+      inertiaRAF = requestAnimationFrame(tick);
+    };
+    inertiaRAF = requestAnimationFrame(tick);
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    const ruler = e.target.closest && e.target.closest('#dk-ruler');
+    if (!ruler) return;
+    e.stopPropagation();
+    e.preventDefault();
+    stopInertia(); // 手指按下去就立刻停住惯性
+    dragging = true;
+    lastX = e.clientX;
+    vel = 0;
+  }, true);
+  document.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    e.stopPropagation();
+    const dx = e.clientX - lastX;
+    lastX = e.clientX;
+    // 指数平滑估速度（对最近几次移动更敏感）
+    // 限速：一次大跨度移动（或极快的甩动）不该造出荒谬的惯性距离
+    vel = Math.max(-14, Math.min(14, dx * 0.7 + vel * 0.3));
+    // 向右拖 → 刻度右移 → 指示线落在更小的值上（时间变短），与"推尺子"的直觉一致
+    setRulerStep(rulerStep - dx / RULER_PX_PER_STEP);
+  }, true);
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false;
+    startInertia();
+  };
+  document.addEventListener('pointerup', stop, true);
+  document.addEventListener('pointercancel', () => { dragging = false; vel = 0; }, true);
+  document.addEventListener('wheel', (e) => {
+    if (!e.target.closest || !e.target.closest('#dk-ruler')) return;
+    e.preventDefault();
+    stopInertia();
+    setRulerStep(rulerStep + (e.deltaY > 0 ? 1 : -1) * 0.8);
+  }, { capture: true, passive: false });
+})();
+
+// 通知按钮统一由下方 #dnd-bar 的监听处理（通知弹窗本体 .n-wrap 里没有按钮）。
+// ⚠️ 这里曾经还有一条 #content → closest('button[data-act]') 的通用监听，它**同时命中计时坞芯片**：
+// 点创建页「开始」时，这条分支只发 {type:'timerStart'} 丢掉 data-ms，把时长打成最小 60s。
+// 计时坞控件已由上面的 #content 监听（.dk-chip 分支）负责，所以这条冗余监听直接删除。
 
 // 弹窗下方的免打扰按钮（独立于弹窗本体）
 $('#dnd-bar').addEventListener('click', (e) => {
@@ -1313,6 +1566,17 @@ window.island.ready();
 /* 计时坞末段逐秒：**只改数字节点的文本**，绝不重建 DOM；
    原来每秒重画整块会让窗口一闪一闪的（内容被整块换掉）。 */
 setInterval(function () {
+  // 短时倒计时：每秒只更新文本节点（不重建 DOM）。
+  // 主进程的状态推送不是每秒必到（推送节流 + 状态未变不重发），所以这里用「载荷到达时刻」
+  // 做本地外推：left = 载荷剩余 - (现在 - 载荷到达时刻)。少了这个基准，
+  // 减数恒为 0 → 数字会卡住不动，直到下一次推送才跳一下。
+  if (timer && timer.active && !timer.paused) {
+    var left = Math.max(0, timer.leftMs - (Date.now() - (timer._at || Date.now())));
+    document.querySelectorAll('[data-timer-num]').forEach(function (el) {
+      var txt = fmtTimer(left);
+      if (el.textContent !== txt) el.textContent = txt;
+    });
+  }
   if (state !== 'dock' || !dock || !dock.at || dock.paused) return;
   var left = dock.at - Date.now();
   if (left > 86400000 || left < -1000) return;

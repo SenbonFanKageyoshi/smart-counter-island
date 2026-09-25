@@ -146,13 +146,17 @@ function open() {
   }
   const disp = screen.getPrimaryDisplay();
   const wa = disp.workArea;
-  const x = Math.round(wa.x + (wa.width - LAB_W) / 2);
-  const y = Math.round(wa.y + (wa.height - LAB_H) / 2);
+  // 按工作区裁剪：1020×620 在小屏（如 1366×768）上会横竖都顶到边，
+  // 居中后左右/上下都会被推出屏幕外，只能看到局部。
+  const labW = Math.min(LAB_W, Math.max(640, wa.width - 60));
+  const labH = Math.min(LAB_H, Math.max(420, wa.height - 60));
+  const x = Math.round(wa.x + (wa.width - labW) / 2);
+  const y = Math.round(wa.y + (wa.height - labH) / 2);
   win = new BrowserWindow({
     x,
     y,
-    width: LAB_W,
-    height: LAB_H,
+    width: labW,
+    height: labH,
     show: false,
     frame: false,
     transparent: true,

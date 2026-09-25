@@ -140,13 +140,20 @@ const DEFAULTS = {
     progressTotalDays: 365, // 进度条总量（天）：填充比例 = (总量 - 剩余天数) / 总量
     hideOnMaximized: true,  // 前台窗口最大化时保持细条（不展开遮挡）
     expandIdleSec: 4,       // 无操作多少秒后放宽（横幅模式已去掉：直接进大窗口）
-    zoomIdleSec: 15,        // 放宽的额外门槛：闲置到 max(expandIdleSec, 本值) 才自动进大窗口（0 = 只用前者）
+    // 自动弹出大窗口的额外门槛，**默认 0 = 不自动弹**。
+    // 理由：大窗口会盖住桌面内容，而且它是鼠标穿透的（点不到、也关不掉），
+    // "只要十几秒不碰键鼠就自己冒出来"在授课场景里是纯打扰。
+    // 想要自动弹出的用户可显式设成 > 0（届时闲置到 max(expandIdleSec, 本值) 才进大窗口）。
+    zoomIdleSec: 0,
     zoomEnabled: true,      // 允许大屏（手动/拖拽/自动）
     cycleEnabled: false,    // 放大时轮播多个事件
     cycleSec: 6,
     // 系统通知接管
     notifyEnabled: true,    // 检测系统通知并在小岛显示
     notifyShowSec: 8,       // 通知显示时长（秒）
+    // 系统通知的最小间隔（秒）：探针每 0.35~0.7 秒采一次，聊天软件刷屏会不停触发接管。
+    // 设一个间隔把连续消息合并成一条，避免灵动岛一直闪；0 = 不节流。
+    notifyMinGapSec: 5,
     // 高级设置
     animFps: 60,            // 窗口动画帧率（20-120；受系统定时器精度影响，>60 提升有限）
     animEnabled: true,      // 状态切换窗口动画开关（关闭 = 瞬间切换，低配友好）
@@ -339,11 +346,25 @@ function load() {
     cache.smart.fullscreenState = 'strip';
     migrated = true;
   }
-  // 事件必须至少有一个
-  if (!Array.isArray(cache.events) || cache.events.length === 0) {
+  // —— 「计时坞」不再是可常驻的手动模式 ——
+  // 之前长按灵动岛进入坞时会写成 manual.mode = 'dock' 并被持久化，
+  // 于是以后每次启动都直接停在计时坞（用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。
+  // 现在计时坞只在长按交互期间显示（由 dockEdit/dockMenu 驱动），所以把遗留值迁回自动。
+  if (cache.manual && cache.manual.mode === 'dock') {
+    cache.manual.mode = 'auto';
+    migrated = true;
+  }
+  // 事件列表**允许为空**：用户在配置页删光之后就是真正的空态
+  // （渲染层已有「暂无倒计时事件（托盘图标 → 配置）」提示，托盘也留着入口）。
+  // 原先这里无条件补一条默认事件，导致用户删掉最后一个事件后，下次启动它又自己回来
+  // —— 表现为「删除不生效」，很伤信任。改成只在**首次运行**（磁盘上从没写过 events 键）给一条示例。
+  if (!disk || disk.events === undefined) {
     cache.events = [defaultEvent()];
-  } else {
-    // 修复历史坏数据：曾因 id 展开顺序错误产生 id 为 null 的事件，补一个唯一 id
+  } else if (!Array.isArray(cache.events)) {
+    cache.events = [];
+  }
+  // 修复历史坏数据：曾因 id 展开顺序错误产生 id 为 null 的事件，补一个唯一 id
+  if (Array.isArray(cache.events) && cache.events.length) {
     cache.events = cache.events.map((e) => {
       if (!e || !e.id) {
         migrated = true;

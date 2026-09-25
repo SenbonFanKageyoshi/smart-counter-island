@@ -9,6 +9,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('cover', {
   // 长按盖板（与长按灵动岛同一个动作）：启动计时坞 + 快捷添加态
   longPress: () => ipcRenderer.invoke('cover:longpress'),
+  // 盖板上的 ✓ / ✗（创建页的确认 / 放弃）：与计时坞里的「开始 / 取消」是同一组动作
+  action: (a) => ipcRenderer.invoke('cover:action', a),
   onContent: (cb) => {
     ipcRenderer.on('cover:content', (_e, payload) => {
       try {

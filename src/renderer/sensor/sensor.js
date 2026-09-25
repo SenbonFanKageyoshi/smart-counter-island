@@ -9,10 +9,55 @@
 const wx = document.getElementById('wx');
 const wxTemp = document.getElementById('wx-temp');
 const txt = document.getElementById('txt');
+const capEl = document.getElementById('cap');
+const cvTime = document.getElementById('cv-time');
+
+/** 剩余时间文本：mm:ss / h:mm:ss（等宽数字，和灵动岛上的秒表同一格式） */
+function fmtLeft(ms) {
+  const sec = Math.max(0, Math.floor((ms || 0) / 1000));
+  const p = (n) => String(n).padStart(2, '0');
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}:${p(Math.floor((sec % 3600) / 60))}:${p(sec % 60)}`;
+  return `${p(Math.floor(sec / 60))}:${p(sec % 60)}`;
+}
+
+/** 盖板很窄，时长用紧凑写法（"45 分" / "2 时 30" / "3 小时"） */
+function fmtMinutesShort(m) {
+  const v = Math.max(1, Math.round(m || 0));
+  if (v < 60) return `${v} 分`;
+  const h = Math.floor(v / 60);
+  const mm = v % 60;
+  return mm ? `${h} 时 ${mm}` : `${h} 小时`;
+}
+
+/** 与灵动岛一致的完整写法（用于开始计时时的 label） */
+function fmtMinutes(m) {
+  const v = Math.max(1, Math.round(m || 0));
+  if (v < 60) return `${v} 分钟`;
+  const h = Math.floor(v / 60);
+  const mm = v % 60;
+  return mm ? `${h} 小时 ${mm} 分` : `${h} 小时`;
+}
+
+let lastPickMinutes = 10; // 创建页当前选中的时长（由主进程推下来，供 ✓ 按钮使用）
 
 function renderContent(p) {
   const c = p || {};
-  // —— 天气 ——
+  const mode = c.mode === 'timer' || c.mode === 'set' ? c.mode : 'normal';
+  capEl.dataset.mode = mode;
+
+  // —— 计时进行中：盖板显示剩余时间（非灵动岛形态下盖板清空的唯一例外）——
+  if (mode === 'timer') {
+    cvTime.textContent = fmtLeft(c.timer && c.timer.leftMs);
+    return;
+  }
+  // —— 创建页（正在设时长）：左边时间、右边确认 / 放弃 ——
+  if (mode === 'set') {
+    lastPickMinutes = Math.max(1, Math.min(1440, Number(c.pickMinutes) || 10));
+    cvTime.textContent = fmtMinutesShort(lastPickMinutes);
+    return;
+  }
+
+  // —— 日常：天气 chip + 自定义文字 ——
   const w = c.weather || null;
   const wOn = !!(w && w.show !== false && w.cover);
   document.documentElement.dataset.anim = wOn ? w.anim || 'none' : 'none';
@@ -26,12 +71,37 @@ function renderContent(p) {
     wx.title = '';
     wx.classList.remove('on');
   }
-  // —— 自定义文字 ——
   const t = String(c.text == null ? '' : c.text);
   txt.textContent = t;
   txt.style.fontSize = `${Math.max(9, Math.min(18, Number(c.textSize) || 11))}px`;
   document.getElementById('cap').dataset.hasText = t ? '1' : '0';
 }
+
+// 盖板上的 ✓ / ✗：与计时坞创建页的「开始 / 取消」完全同一组动作
+(function () {
+  const ok = document.getElementById('cv-ok');
+  const no = document.getElementById('cv-no');
+  if (ok) {
+    ok.addEventListener('click', function (e) {
+      e.stopPropagation();
+      try {
+        window.cover.action({ type: 'timerStart', ms: lastPickMinutes * 60000, label: fmtMinutes(lastPickMinutes) });
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+  if (no) {
+    no.addEventListener('click', function (e) {
+      e.stopPropagation();
+      try {
+        window.cover.action({ type: 'dockDone' });
+      } catch (err) {
+        /* ignore */
+      }
+    });
+  }
+})();
 
 if (window.cover && typeof window.cover.onContent === 'function') {
   window.cover.onContent(renderContent);

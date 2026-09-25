@@ -278,6 +278,11 @@
       <input type="number" id="notifyShowSec" min="2" max="60" step="1">
     </div>
     <div class="field">
+      <label>通知最小间隔（秒）</label>
+      <input type="number" id="notifyMinGapSec" min="0" max="120" step="1">
+      <p class="hint">聊天软件连续来消息时，间隔内的通知会合并成一条，避免灵动岛一直闪。0 = 不节流。</p>
+    </div>
+    <div class="field">
       <label class="inline"><input type="checkbox" id="hideOnMaximized"> 窗口最大化时保持灵动岛</label>
     </div>
     <div class="field">
@@ -295,10 +300,12 @@
     <div class="field">
       <label>闲置多少秒后放大到大窗口</label>
       <input type="number" id="expandIdleSec" min="0" max="120" step="1">
+      <p class="hint">仅在下面「自动放大门槛」大于 0 时生效；实际等待取两者较大值。</p>
     </div>
     <div class="field">
-      <label>自动放大再等多少秒（取两者较大值；0 = 只用上面那个）</label>
+      <label>自动放大门槛（秒）</label>
       <input type="number" id="zoomIdleSec" min="0" max="3600" step="1">
+      <p class="hint">0 = 永不自动放大（默认）。大窗口会盖住桌面内容且鼠标穿透，建议保持 0，需要时手动放大。</p>
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="zoomEnabled"> 允许倒计时窗口</label>
@@ -316,9 +323,9 @@
         <label><input type="radio" name="manualMode" value="auto"> 自动</label>
         <label><input type="radio" name="manualMode" value="pinned"> 固定显示</label>
         <label><input type="radio" name="manualMode" value="zoom"> 大窗口驻留</label>
-        <label><input type="radio" name="manualMode" value="dock"> 计时坞（黑底白字·效果同通知）</label>
         <label><input type="radio" name="manualMode" value="hidden"> 隐藏成灵动岛</label>
       </div>
+      <p class="hint">计时坞不在这里 —— 它由「长按灵动岛」打开，是一个手机时钟那样的倒计时器，不会常驻。</p>
     </div>
   </section>
 
@@ -342,10 +349,10 @@
     <div class="field" id="schedQuickBox" hidden>
       <label>快速排课</label>
       <div class="pos-row">
-        <span class="small">第 1 节</span><input type="time" id="qfStart" value="08:00">
-        <span class="small">每节</span><input type="number" id="qfLen" min="10" max="120" step="5" value="45">
-        <span class="small">分 · 课间</span><input type="number" id="qfBreak" min="0" max="60" step="5" value="10">
-        <span class="small">分 · 共</span><input type="number" id="qfCount" min="1" max="20" step="1" value="8">
+        <span class="pair"><span class="small">第 1 节</span><input type="time" id="qfStart" value="08:00"></span>
+        <span class="pair"><span class="small">每节</span><input type="number" id="qfLen" min="10" max="120" step="5" value="45"></span>
+        <span class="pair"><span class="small">分 · 课间</span><input type="number" id="qfBreak" min="0" max="60" step="5" value="10"></span>
+        <span class="pair"><span class="small">分 · 共</span><input type="number" id="qfCount" min="1" max="20" step="1" value="8"></span>
         <span class="small">节</span>
       </div>
       <div class="pos-row" style="margin-top:8px">
@@ -481,13 +488,9 @@
       <label class="inline"><input type="checkbox" id="wxAnim"> 天气动画（图标动画 + 提醒时整条岛特效）</label>
     </div>
 
-    <div class="field"><label>天气位置（细条上放哪儿）</label>
-      <select id="wxPos">
-        <option value="right">右端（默认）</option>
-        <option value="left">左端</option>
-        <option value="cover">盖板上（中间的传感器窗口）</option>
-      </select>
-      <div class="hint">「盖板上」= 把天气画在中间那块传感器盖板窗口上（不会侵入禁区，但会与摄像头区域重叠，摄像头不用时再选）。
+    <div class="field"><label>天气显示位置</label>
+      
+      <div class="hint">天气**只显示在盖板上**（中间那块传感器窗口），灵动岛细条不再显示天气。<br>⚠️ 需要先启用下面的「盖板」；盖板未启用时天气不会显示。
         <br>盖板上还想显示文字/变量 →「显示效果 → 传感器盖板内容」。</div>
     </div>
 

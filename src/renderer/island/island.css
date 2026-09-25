@@ -106,10 +106,26 @@ body[data-anim="1"] #glass-tint { display: none !important; }
      否则圆角裁剪对合成子层失效 → 玻璃呈方形露出。 */
   will-change: transform;
   transform: translateZ(0);
-  transition: border-radius 0.24s ease, opacity 0.25s ease, box-shadow 0.24s ease;
+  transition: border-radius 0.24s ease, opacity 0.25s ease, box-shadow 0.24s ease, transform 0.12s ease-out;
   touch-action: none;
   -webkit-user-drag: none;
 }
+
+/* —— 长按反馈 ——
+   渲染层 pressFeedback() 会往 body 加 .pressing / .press-fired，
+   但此前 island.css 里**没有这两个选择器**（只有传感器页有），于是按住 700ms 全程零反馈：
+   用户既不知道"按住被识别了"，也不知道什么时候会触发。
+   这里补上。注意两点：
+   1) 必须带上 #pill 原有的 translateZ(0)：它让 #pill 成为合成层，
+      否则 border-radius 的圆角裁剪对玻璃子层失效（见 #pill 注释）。
+   2) 大面板（计时坞/大窗口）在窗口里几乎没有余量，同样系数会被窗口裁掉边角，
+      所以这两态用更克制的系数。 */
+body.pressing #pill { transform: translateZ(0) scale(1.03); }
+body.press-fired #pill { transform: translateZ(0) scale(1.05); }
+body[data-state="dock"].pressing #pill,
+body[data-state="zoom"].pressing #pill { transform: translateZ(0) scale(1.015); }
+body[data-state="dock"].press-fired #pill,
+body[data-state="zoom"].press-fired #pill { transform: translateZ(0) scale(1.025); }
 
 body[data-state="strip"]    #pill { border-radius: 13px; }
 body[data-state="expanded"] #pill { border-radius: 999px; }
@@ -560,35 +576,715 @@ body[data-state="strip"][data-strip="glass"] .s-unit { color: var(--ink-soft); }
 .z-time { font-size: var(--z-time, 30px); font-weight: 700; letter-spacing: 2px; white-space: nowrap; }
 .z-time .sep { color: var(--ink-soft); font-weight: 600; }
 
-/* ===== 操作按钮（大屏展示模式已移除：倒计时窗口为纯展示、鼠标穿透） ===== */
-#buttons {
-  position: absolute;
-  bottom: 10px;
-  left: 0; right: 0;
-  display: flex;
-  justify-content: center;
+/* ===== 系统通知弹窗（黑底白字；只含标题+正文，正文最多 2 行） =====
+   免打扰按钮在 #dnd-bar（弹窗下方独立胶囊），见上方。行高固定 px，与渲染器测量一致。 */
+/* —— 计时坞：对标 iOS 倒计时 Live Activity（环形进度 + 超大等宽数字 + 细线性进度）—— */
+body[data-state="dock"] #pill {
+  top: 8px; left: 8px; right: 8px; bottom: 8px;
+  background: #000000;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.dk-wrap {
+  width: 100%; height: 100%;
+  padding: 12px 18px 10px;
+  display: flex; flex-direction: column; justify-content: center;
   gap: 8px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s ease;
-  z-index: 5;
+  font-family: "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+}
+.dk-main { display: flex; align-items: center; gap: 14px; }
+.dk-ring { width: 52px; height: 52px; flex: 0 0 52px; transform: rotate(-90deg); }
+.dk-ring-track { fill: none; stroke: rgba(255, 255, 255, 0.16); stroke-width: 4; }
+.dk-ring-bar {
+  fill: none; stroke: #ffffff; stroke-width: 4; stroke-linecap: round;
+  transition: stroke-dashoffset 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.dk-text { min-width: 0; flex: 1; }
+.dk-row { display: flex; align-items: baseline; gap: 5px; }
+/* 超大等宽数字（tabular）：苹果倒计时的关键观感 —— 数字不跳宽、字距收紧 */
+.dk-num {
+  font-size: 40px; font-weight: 700; line-height: 1;
+  letter-spacing: -1.2px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  color: #ffffff;
+}
+.dk-unit { font-size: 16px; font-weight: 600; color: rgba(255, 255, 255, 0.72); letter-spacing: 0; }
+.dk-title {
+  margin-top: 3px;
+  font-size: 12.5px; font-weight: 500;
+  color: rgba(255, 255, 255, 0.52);
+  letter-spacing: 0.3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dk-date { font-size: 12px; color: rgba(255, 255, 255, 0.38); font-variant-numeric: tabular-nums; }
+/* 细线性进度（Live Activity 式） */
+.dk-bar { height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.dk-bar > i { display: block; height: 100%; background: #ffffff; border-radius: 3px; transition: width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1); }
+
+/* —— 计时坞芯片按钮（创建页「开始/取消」与操作页「暂停/取消倒计时/返回」共用）——
+   这里之前**没有任何基础样式**，只有一组 dock 作用域的颜色覆盖，
+   于是按钮走浏览器默认外观：方角、UA 边框、默认字号 —— 看着很糙。
+   下面的取值按人因研究定：
+     · 目标尺寸：WCAG 2.5.5 指针目标最小 24×24（AA）/ 44×44（AAA），Apple HIG 44pt、Material 48dp。
+       桌面小窗不适宜真的放到 44px 视觉高，所以**视觉 32px + 可点区外扩到约 44px**（见 ::before），
+       兼顾观感与"点得中"（Fitts 定律：目标越大、距离越近，命中越快越准）。
+     · 层次：主操作最重（实心白），次要操作最轻（弱描边），危险操作明确但不抢主操作
+       （Apple Action Sheet / VA.gov 按钮决策：危险项要可辨识，但不该压过用户的主路径）。
+     · 动效：背景/描边 140ms、位移 100ms，均取"感知即时"区间；只动 transform/色彩，不触发布局。 */
+.dk-chip {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease-out, border-color 0.14s ease-out, color 0.14s ease-out, transform 0.1s ease-out;
+}
+/* 命中区外扩：视觉高 32px，实际可点范围约 44px 高（含岛内边距），
+   对着 WCAG 2.5.5 的 44×44 目标；空元素不改变任何视觉。 */
+.dk-chip::before {
+  content: "";
+  position: absolute;
+  inset: -6px -4px;
+  border-radius: inherit;
+}
+.dk-chip:hover { background: rgba(255, 255, 255, 0.18); }
+/* 按下轻微内缩：触摸/点击的即时反馈（与岛的 press-feedback 同一语言） */
+.dk-chip:active { transform: scale(0.96); }
+.dk-chip:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 2px; }
+/* 主操作（开始 / 暂停 / 继续）：唯一实心块，视觉落点 */
+.dk-chip.done {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #0b0b0f;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.dk-chip.done:hover { background: #f1f1f3; border-color: #f1f1f3; }
+/* 次要操作（取消 / 返回）：最轻的一档，静止时不与主操作争视线，悬停才浮现底色 */
+.dk-chip.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+.dk-chip.ghost:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.26);
+  color: #ffffff;
+}
+/* 危险操作（取消倒计时）：用红"标记"而非红"填满" —— 可辨识，但不比主操作更响 */
+.dk-chip.danger {
+  background: rgba(255, 69, 58, 0.12);
+  border-color: rgba(255, 69, 58, 0.48);
+  color: #ff6b60;
+}
+.dk-chip.danger:hover { background: rgba(255, 69, 58, 0.22); border-color: rgba(255, 69, 58, 0.62); }
+
+/* 计时坞恒定黑底白字：不跟随"背景亮度自适应"（data-ink/data-bg）——
+   否则壁纸亮时它会被改成浅底深字，看不出是通知那种黑底倒计时。
+   （通知形态也是同样处理：固定黑底。） */
+body[data-state="dock"] #pill { background: #000000 !important; }
+body[data-state="dock"] .dk-num,
+body[data-state="dock"] .dk-unit { color: #ffffff !important; }
+body[data-state="dock"] .dk-title { color: rgba(255, 255, 255, 0.52) !important; }
+body[data-state="dock"] .dk-date { color: rgba(255, 255, 255, 0.38) !important; }
+body[data-state="dock"] .dk-ring-track { stroke: rgba(255, 255, 255, 0.16) !important; }
+body[data-state="dock"] .dk-ring-bar { stroke: #ffffff !important; }
+body[data-state="dock"] .dk-bar { background: rgba(255, 255, 255, 0.14) !important; }
+body[data-state="dock"] .dk-bar > i { background: #ffffff !important; }
+/* 注：.dk-chip 的黑底白字配色已由上方基础样式（.dk-chip / .done / .ghost / .danger）保证，
+   这里不再重复用 !important 覆盖 —— 那样会把 :hover 的反馈一并压掉。 */
+* ===== Smart Counter Island · 灵动岛 ===== */
+:root {
+  --glass-gap: 60px; /* 毛玻璃层超出的采样余量 */
+  --glow-k: 1;     /* 玻璃高光强度系数（1 = 默认，0 = 无高光）；由渲染层按设置写入 */
+  --ink: #ffffff;          /* 文字主色（由背景亮度自动切换） */
+  --ink-soft: rgba(255, 255, 255, 0.72);
+  --accent: #4f7cff;
 }
 
-.ib {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.22);
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  transition: background 0.15s ease, transform 0.1s ease;
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
 }
-.ib:hover { background: rgba(255, 255, 255, 0.5); transform: scale(1.08); }
-.ib:active { transform: scale(0.94); }
-.ib.up { font-size: 11px; }
+
+/* ===== 文字颜色自适应（背景亮度 → 深/浅字） ===== */
+body[data-ink="dark"] { --ink: #10203c; --ink-soft: rgba(16, 32, 60, 0.68); }
+body[data-ink="light"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.75); }
+/* 黑底形态恒用白字：灵动岛（黑底样式）/ 通知弹窗 / 无效果模式。
+   这些形态的底色永远是黑色，若继续跟随背景亮度，亮背景下会变成深蓝字压在
+   黑色胶囊上，几乎看不见（灵动岛最常见的"显示不对"）。 */
+body[data-glass="off"],
+body[data-state="notify"],
+body[data-state="dock"],
+body[data-state="corner"],
+body[data-state="progress"],
+body[data-state="strip"][data-strip="black"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.78); }
+
+/* ===== 真实毛玻璃层（主进程推送的截屏模糊，已排除自身） =====
+   #glass 位于 #pill 内部。注意：filter（CSS blur 或液态 SVG 滤镜）会把
+   本元素提升为合成层，Chromium 对合成层后代不应用父元素的 border-radius
+   圆角裁剪（只会矩形裁剪）→ 必须给 #glass 自身加 clip-path 圆角，
+   形状与 #pill 的圆角一致（inset 68px = 玻璃外扩量，回落到 pill 区域）。
+   filter 先渲染、clip-path 后裁，模糊边缘采样不受影响。
+   定位相对 #pill（窗口内 8px）：外扩 (60+8)px ≈ 原窗口坐标 -60px，与主进程
+   background-position（posX-60）对齐保持一致；模糊采样使用元素自身溢出部分。 */
+.glass {
+  position: absolute;
+  left: calc(-1 * (var(--glass-gap) + 8px));
+  top: calc(-1 * (var(--glass-gap) + 8px));
+  right: calc(-1 * (var(--glass-gap) + 8px));
+  bottom: calc(-1 * (var(--glass-gap) + 8px));
+  background-repeat: no-repeat;
+  /* 兜底（液态滤镜未挂载时）：
+     liquid 模式 = 清晰透亮；capture 模式 = 真实模糊 blur。
+     液态模式正常走内联 url(#lg-filter) 覆盖此值。 */
+  filter: saturate(1.25) brightness(1.06);
+  opacity: 0.96;
+  display: none;
+  pointer-events: none;
+  /* 自裁剪为与 #pill 相同的圆角形状：从外扩盒内缩 (gap+8)px 即 pill 区域 */
+  clip-path: inset(calc(var(--glass-gap) + 8px) round 13px);
+  transition: clip-path 0.24s ease;
+}
+/* capture（模糊玻璃）模式：真实模糊兜底 */
+body[data-glass="capture"] #glass {
+  filter: blur(30px) saturate(1.65) brightness(1.05);
+  opacity: 0.92;
+}
+/* liquid（液态玻璃）模式：中心必须与原画面一致 → 不额外降低不透明度 */
+body[data-glass="liquid"] #glass {
+  filter: saturate(1.25) brightness(1.06);
+  opacity: 1;
+}
+body[data-state="expanded"] #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 999px); }
+body[data-state="zoom"]     #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 42px); }
+body[data-state="notify"]   #glass { clip-path: inset(calc(var(--glass-gap) + 8px) round 24px); }
+
+/* GPU 液态玻璃（webgl）画布：与胶囊等大。
+   着色器可直接采样画面任意位置，不需要 CPU 路径那 60px 外扩采样余量；
+   形状由着色器的圆角 SDF 负责，因此也不需要 clip-path。
+   注意：canvas 是「替换元素」，必须显式写 width/height:100%，只写 inset 撑不开它。
+   显示/隐藏由渲染层按形态切换（JS 设置 display）。 */
+.glass-gl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  pointer-events: none;
+  /* 与 CPU 链路 .glass 保持同一套观感参数（饱和度/亮度微调） */
+  filter: saturate(1.25) brightness(1.06);
+}
+
+/* 窗口尺寸动画期间：隐藏真实玻璃层（含高光层与 GPU 画布），避免液态滤镜/合成层在
+   缩放中逃逸圆角裁剪露出方形模糊边；pill 自身半透明渐变底撑住过渡 */
+body[data-anim="1"] #glass,
+body[data-anim="1"] #glass-gl,
+body[data-anim="1"] #glass-tint { display: none !important; }
+
+/* ===== 灵动岛本体 ===== */
+#pill {
+  position: absolute;
+  left: 8px; top: 8px; right: 8px; bottom: 8px;
+  border-radius: 999px; /* 胶囊形（苹果灵动岛）：两侧半圆 */
+  overflow: hidden;
+  /* 自身成为合成层：Chromium 只在父层自身合成时，把 border-radius 圆角作为
+     mask 应用到整棵子树（含被 filter 提升为合成层的 #glass）。
+     否则圆角裁剪对合成子层失效 → 玻璃呈方形露出。 */
+  will-change: transform;
+  transform: translateZ(0);
+  transition: border-radius 0.24s ease, opacity 0.25s ease, box-shadow 0.24s ease, transform 0.12s ease-out;
+  touch-action: none;
+  -webkit-user-drag: none;
+}
+
+/* —— 长按反馈 ——
+   渲染层 pressFeedback() 会往 body 加 .pressing / .press-fired，
+   但此前 island.css 里**没有这两个选择器**（只有传感器页有），于是按住 700ms 全程零反馈：
+   用户既不知道"按住被识别了"，也不知道什么时候会触发。
+   这里补上。注意两点：
+   1) 必须带上 #pill 原有的 translateZ(0)：它让 #pill 成为合成层，
+      否则 border-radius 的圆角裁剪对玻璃子层失效（见 #pill 注释）。
+   2) 大面板（计时坞/大窗口）在窗口里几乎没有余量，同样系数会被窗口裁掉边角，
+      所以这两态用更克制的系数。 */
+body.pressing #pill { transform: translateZ(0) scale(1.03); }
+body.press-fired #pill { transform: translateZ(0) scale(1.05); }
+body[data-state="dock"].pressing #pill,
+body[data-state="zoom"].pressing #pill { transform: translateZ(0) scale(1.015); }
+body[data-state="dock"].press-fired #pill,
+body[data-state="zoom"].press-fired #pill { transform: translateZ(0) scale(1.025); }
+
+body[data-state="strip"]    #pill { border-radius: 13px; }
+body[data-state="expanded"] #pill { border-radius: 999px; }
+body[data-state="zoom"]     #pill { border-radius: 42px; }
+body[data-state="notify"]   #pill { border-radius: 24px; }
+body[data-state="dock"]     #pill { border-radius: 24px; }
+/* 全屏授课形态：窗口本身就等于卡片（无 PAD），形状只留朝屏幕内侧的圆角 */
+/* 角落卡片：左上/右下是**内凹**圆角、左下是普通外凸圆角 → 由 JS 算 clip-path 精确绘制
+   （border-radius 只能做外凸圆角，做不出"反着的圆角"） */
+body[data-state="corner"]   #pill { left: 0; top: 0; right: 0; bottom: 0; border-radius: 0; }
+body[data-state="progress"] #pill { left: 0; top: 0; right: 0; bottom: 0; border-radius: 0 0 12px 12px; }
+
+/* —— 全屏授课：右上角角落卡片（贴屏幕右上角，只显示剩余时间） —— */
+body[data-state="corner"] #pill {
+  background: rgba(0, 0, 0, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+body[data-state="corner"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.72); }
+body[data-state="corner"] #content {
+  display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 20px 0 16px;
+}
+.cz-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.cz-mid { display: flex; align-items: baseline; gap: 6px; color: var(--ink); }
+.cz-num { font-size: 32px; font-weight: 800; line-height: 1.05; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+.cz-unit { font-size: 14px; font-weight: 700; }
+.cz-time { font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* —— 全屏授课：屏幕顶部倒计时进度条（贴顶整宽 + 填充进度） —— */
+body[data-state="progress"] #pill {
+  background: rgba(0, 0, 0, 0.72);
+  box-shadow: inset 0 -1px 0 1px rgba(255, 255, 255, 0.07);
+}
+body[data-state="progress"] { --ink: #ffffff; --ink-soft: rgba(255, 255, 255, 0.7); }
+body[data-state="progress"] #content { display: block; height: 100%; }
+.pb-wrap { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.pb-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(79, 124, 255, 0.85), rgba(126, 166, 255, 0.95));
+  transition: width 0.6s ease;
+}
+.pb-label {
+  position: relative; display: flex; align-items: baseline; gap: 8px;
+  font-size: 11px; letter-spacing: 0.2px; color: var(--ink);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.pb-name { font-weight: 700; }
+.pb-num { font-weight: 800; font-variant-numeric: tabular-nums; }
+.pb-time { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* —— 模拟玻璃（fake）：渐变 + 噪点，文字色随亮度 —— */
+body[data-glass="fake"] #pill {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.50),
+    rgba(255, 255, 255, 0.10) 34%,
+    rgba(150, 190, 255, 0.18) 68%,
+    rgba(255, 255, 255, 0.30)
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.30),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 14px 40px rgba(8, 16, 40, 0.30),
+    0 4px 12px rgba(8, 16, 40, 0.22);
+}
+/* 深色背景上用深色玻璃底会看不清 → 自动调深底 */
+body[data-glass="fake"][data-ink="light"] #pill {
+  background: linear-gradient(160deg, rgba(20, 30, 55, 0.72), rgba(20, 30, 55, 0.45));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 14px 40px rgba(8, 16, 40, 0.35),
+    0 4px 12px rgba(8, 16, 40, 0.25);
+}
+
+/* —— 真实玻璃（capture）：极淡着色，模糊层显示背景 —— */
+body[data-glass="capture"] #pill {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.04) 45%, rgba(255, 255, 255, 0.10));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    0 14px 40px rgba(8, 16, 40, 0.28),
+    0 4px 12px rgba(8, 16, 40, 0.18);
+}
+/* —— 液态玻璃（liquid）：中心完全平整无着色，直接透出背后原画面；
+      只有边缘一圈折射带 + 1px 锐利边线 + 两端弧线高光。
+      因此背景设为透明、玻璃层不做额外降透明（否则中心画面会变淡，
+      不再是"与原画面一模一样"）。 —— */
+body[data-glass="liquid"] #pill,
+body[data-glass="webgl"] #pill {
+  background: transparent;
+  box-shadow:
+    inset 0 1px 0 rgba(178, 182, 190, 0.55),
+    inset 0 -1px 0 rgba(146, 150, 158, 0.42),
+    inset 1px 0 0 rgba(152, 156, 164, 0.16),
+    inset -1px 0 0 rgba(152, 156, 164, 0.16),
+    inset 0 0 0 1px rgba(156, 160, 168, 0.07);
+}
+
+/* 高光层：液态玻璃的中心保持完全平整清晰，因此此层不铺中心白渐变，
+   只保留边缘 1px 白描边（玻璃实体感的轮廓线）；折射/渗色/边缘高光由液态滤镜提供。
+   显示与 #glass 同步（由渲染器 updateGlassVisibility 控制） */
+.glass-tint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+    inset 0 1px 1px rgba(255, 255, 255, 0.55);
+}
+/* 液态模式：边线由 #pill 的内阴影提供（已调暗为浅灰），本层只负责
+   「玻璃表面」的光影 —— 让它看起来是一块有厚度的玻璃而不是一层贴纸：
+     ① 两端弧线高光（贴弧 3px）
+     ② 顶部高光带（顶光源在玻璃面上的反光）
+     ③ 左上对角弱反光（镜面斜向反射）
+     ④ 下部渐暗 + 底部内阴影（玻璃厚度感 / 玻璃投在背后的影子） */
+/* 液态模式：边线由 #pill 的内阴影提供（已调暗为浅灰），本层只负责
+   「玻璃表面」的光影 —— CPU 链路（SVG 滤镜）的观感已确认正常，数值保持不动：
+     ① 两端弧线高光（贴弧 3px）
+     ② 顶部高光带（顶光源在玻璃面上的反光）
+     ③ 左上对角弱反光（镜面斜向反射）
+     ④ 下部渐暗 + 底部内阴影（玻璃厚度感 / 玻璃投在背后的影子） */
+body[data-glass="liquid"] .glass-tint,
+body[data-glass="webgl"] .glass-tint {
+  box-shadow:
+    inset 0 0 0 1px rgba(156, 160, 168, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.26 * var(--glow-k, 1)));
+  background:
+    linear-gradient(90deg, rgba(180, 184, 192, calc(0.20 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(270deg, rgba(180, 184, 192, calc(0.20 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.18 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 6%, rgba(255, 255, 255, 0) 18%),
+    linear-gradient(115deg, rgba(255, 255, 255, calc(0.12 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.03 * var(--glow-k, 1))) 20%, rgba(255, 255, 255, 0) 42%),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.20) 0px, rgba(6, 8, 14, 0.09) 6%, rgba(6, 8, 14, 0.02) 16%, rgba(6, 8, 14, 0) 36%);
+}
+
+/* —— 细条（灵动岛）使用「跟随玻璃效果」时：光影必须收窄到 px 级。
+   细条高度只有 26px 上下，百分比带（顶部 18%、底部 20%、对角反光）在这么矮的
+   元素上会糊满整条胶囊，看起来就是"一团雾"而不是玻璃边缘。 —— */
+body[data-state="strip"][data-strip="glass"] .glass-tint {
+  box-shadow:
+    inset 0 0 0 1px rgba(170, 174, 182, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.30 * var(--glow-k, 1)));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.20 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 2px, rgba(255, 255, 255, 0) 7px),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.24) 0px, rgba(6, 8, 14, 0.08) 2px, rgba(6, 8, 14, 0) 8px);
+}
+body[data-state="strip"][data-strip="glass"][data-glass="liquid"] .glass-tint,
+body[data-state="strip"][data-strip="glass"][data-glass="webgl"] .glass-tint {
+  background:
+    linear-gradient(90deg, rgba(180, 184, 192, calc(0.16 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(270deg, rgba(180, 184, 192, calc(0.16 * var(--glow-k, 1))) 0px, transparent 3px),
+    linear-gradient(180deg, rgba(255, 255, 255, calc(0.20 * var(--glow-k, 1))) 0px, rgba(255, 255, 255, calc(0.05 * var(--glow-k, 1))) 2px, rgba(255, 255, 255, 0) 7px),
+    linear-gradient(0deg, rgba(6, 8, 14, 0.24) 0px, rgba(6, 8, 14, 0.08) 2px, rgba(6, 8, 14, 0) 8px);
+}
+/* 细条玻璃样式下背景可能很亮也可能很暗 → 文字用双向描边保证任何背景都读得清 */
+body[data-state="strip"][data-strip="glass"] #content {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42), 0 0 6px rgba(255, 255, 255, 0.18);
+}
+
+/* —— 无效果（off）：纯黑底白字；仅当背景全黑时（data-bg=dark）加 1px 纯白边分隔（非发光） —— */
+body[data-glass="off"] #pill {
+  background: #000000;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+body[data-glass="off"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+
+/* —— 灵动岛（默认形态）：纯黑底白字胶囊；背景全黑时加 1px 纯白边；
+   可选 data-strip="glass"：跟随玻璃效果（可自定义） —— */
+body[data-state="strip"][data-strip="black"] #pill {
+  background: #000000;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+body[data-state="strip"][data-strip="black"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(168, 172, 180, 0.9); /* 浅灰描边（已由纯白 → 浅灰 → 再调暗） */
+}
+
+/* —— 系统通知：纯黑底白字弹窗；背景全黑时加 1px 纯白边 —— */
+body[data-state="notify"] #pill {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  bottom: auto;
+  /* 弹窗高度 = 窗口内容 - 上下 PAD(16) - 顶部边距8 - 间隙6 - 按钮24 - 底部边距8；
+     与渲染器测量公式保持一致（改了 CSS 需同步 island.js measureNotify） */
+  height: calc(100% - 62px);
+  background: #000000;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+body[data-state="notify"][data-bg="dark"] #pill {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+
+/* —— 免打扰至下课按钮：独立小胶囊，显示在消息弹窗下方（仅通知形态） —— */
+#dnd-bar {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 8px;
+  height: 24px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 4;
+}
+body[data-state="notify"] #dnd-bar { display: flex; }
+#dnd-bar .n-btn {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(12, 16, 24, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  color: #ffffff;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 0 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+#dnd-bar .n-btn:hover { background: rgba(255, 255, 255, 0.16); }
+#dnd-bar .n-hint { font-size: 11px; line-height: 24px; color: rgba(255, 255, 255, 0.42); white-space: nowrap; }
+
+/* —— 颗粒噪点 —— */
+#noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.08;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='140' height='140' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+
+/* ===== 内容（字体清晰化） ===== */
+#content {
+  position: absolute;
+  inset: 0;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s ease;
+}
+
+/* 玻璃模式（中心完全透明、文字直接叠在桌面内容上）→ 加自适应描边提升对比度：
+   暗背景（白字）用深色描边，亮背景（深字）用浅色描边，任何壁纸下都能读清。 */
+body[data-state="expanded"][data-glass="capture"] #content,
+body[data-state="zoom"][data-glass="capture"] #content,
+body[data-state="expanded"][data-glass="liquid"] #content,
+body[data-state="expanded"][data-glass="webgl"] #content,
+body[data-state="zoom"][data-glass="liquid"] #content,
+body[data-state="zoom"][data-glass="webgl"] #content {
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.6),
+    0 0 1px rgba(0, 0, 0, 0.5),
+    0 0 8px rgba(0, 0, 0, 0.28);
+}
+body[data-state="expanded"][data-glass="capture"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="capture"][data-ink="dark"] #content,
+body[data-state="expanded"][data-glass="liquid"][data-ink="dark"] #content,
+body[data-state="expanded"][data-glass="webgl"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="liquid"][data-ink="dark"] #content,
+body[data-state="zoom"][data-glass="webgl"][data-ink="dark"] #content {
+  text-shadow:
+    0 1px 2px rgba(255, 255, 255, 0.92),
+    0 0 1px rgba(255, 255, 255, 0.85),
+    0 0 8px rgba(255, 255, 255, 0.7);
+}
+/* 数字/时间等大字同样描边，避免细笔画被背景吞掉 */
+body[data-glass="liquid"] .e-unit,
+body[data-glass="webgl"] .e-unit,
+body[data-glass="liquid"] .z-unit,
+body[data-glass="webgl"] .z-unit,
+body[data-glass="capture"] .e-unit,
+body[data-glass="capture"] .z-unit {
+  text-shadow: inherit;
+}
+
+.empty { font-size: 14px; color: var(--ink-soft); }
+/* 无倒计时事件时的天气排布：提示在上、天气 chip 在下（竖排居中） */
+.empty-wrap { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.empty-wrap .empty { font-size: 12px; }
+.empty-wrap .wx { margin-left: 0; }
+
+/* —— 传感器避让 ——
+   禁区那块黑由独立的「传感器盖板」窗口负责（纯黑胶囊、永久置顶、永不移动）；
+   小岛这边只负责把内容让开禁区：位置/尺寸按「屏幕坐标 - 窗口坐标」实时换算。 */
+/* 调试层：传感器彩色圆点 + 禁区虚线框（规格 interaction.toggle_sensor） */
+#sensor-debug {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+#sensor-debug .sd-zone {
+  position: absolute;
+  border: 1px dashed rgba(255, 255, 255, 0.75);
+  box-sizing: border-box;
+}
+#sensor-debug .sd-dot {
+  position: absolute;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content） */
+@keyframes sci-content-in {
+  from { opacity: 0; translate: 0 4px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+body[data-notch="1"] #content > * { animation: sci-content-in 0.3s ease-out both; }
+/* split 布局：图标在传感器左侧、数字在右侧，中间那条空隙正好等于禁区宽度 + 左右空隙，
+   整行居中 → 内容紧挨着传感器，不会一个贴最左一个贴最右，也不会被裁掉。
+   ⚠️ 两瓣必须 flex:0 0 auto（永不压缩）：曾经给它们加 min-width:0 + flex-shrink:1 当"兜底"，
+   结果窗口刚创建还是细条初始尺寸（pill 116 < 空隙 113+槽位）时两瓣被压成 11px/0px，
+   数字整块被裁掉且之后不再重排 —— 就是"刚启动没文字、展开收起后才出现"的真凶。
+   兜底改为只加在整行上：行内 overflow:hidden，宁可边缘裁一点，绝不让两瓣塌成 0。 */
+body[data-notch="1"][data-notch-layout="split"] .s-row,
+body[data-notch="1"][data-notch-layout="split"] .e-row {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  justify-content: center;
+  overflow: hidden;
+}
+body[data-notch="1"][data-notch-layout="split"] .nb-l,
+body[data-notch="1"][data-notch-layout="split"] .nb-r {
+  flex: 0 0 auto;
+}
+body[data-notch="1"] .nb-l, body[data-notch="1"] .nb-r {
+  display: inline-flex; align-items: inherit; gap: inherit; min-width: 0;
+}
+.nb-gap {
+  flex: 0 0 auto;      /* 空隙宽度=禁区宽+左右槽位，固定值（两瓣永不压缩才是安全方向） */
+  align-self: stretch;
+  width: calc(var(--notch-gap, 0px) + var(--notch-slot-l, 14px) + var(--notch-slot-r, 12px));
+}
+/* below 布局：内容从禁区底边下方开始（横幅 / 倒计时窗口 / 通知弹窗都往传感器下方长） */
+body[data-notch="1"][data-notch-layout="below"][data-state="expanded"] #content,
+body[data-notch="1"][data-notch-layout="below"][data-state="zoom"] #content,
+body[data-notch="1"][data-notch-layout="below"][data-state="notify"] #content {
+  padding-top: var(--notch-pad-t, 0px);
+}
+/* 顶部进度条整宽贴顶，禁区正在中间 → 文字整段让到禁区右侧 */
+body[data-notch="1"][data-state="progress"] .pb-label {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--notch-cx, 50%) + var(--notch-half, 0px) + 10px);
+  transform: translateY(-50%);
+}
+
+/* —— 细条 strip（黑底白字） —— */
+.s-row { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #ffffff; }
+.s-emoji { font-size: 13px; }
+
+/* 「去掉所有图标内容」：细条左瓣保留一块等宽占位（不画图标）。
+   保留宽度是为了让禁用区分割布局的行宽/居中不变 —— 直接删掉左瓣会让右瓣
+   顶进禁区带，被布局兜底裁切。 */
+.s-emoji.s-noicon { width: 18px; min-width: 18px; height: 1px; display: inline-block; }
+/* 没有事件名时（极少）左瓣留一块小留白，保持两侧不至于一边倒 */
+.s-name.s-noicon { width: 14px; min-width: 14px; height: 1px; }
+.s-num { font-weight: 800; font-size: 13.5px; color: #ffffff; letter-spacing: -0.2px; }
+.s-unit { color: rgba(255, 255, 255, 0.78); font-size: 12.5px; font-weight: 600; }
+/* 细条左瓣：事件名（填空 + 与右侧天数左右平衡）。
+   与天数同级字号、略低对比度 → 一眼看先看到天数，再看是什么事件。
+   限宽 4.2em：太长就省略号，避免左右瓣宽度差过大导致某一瓣顶进禁区带。 */
+.s-name {
+  display: inline-block;
+  /* 限宽 4em（≈50px）：几何上左瓣 ≤58px 才能保证「整行居中」后空隙仍完整盖住禁区带
+     （空隙 113 = 禁区 87 + 两侧槽位 26 → 左右瓣宽度差最多 26px）；再宽就会被兜底裁切。 */
+  max-width: 4.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 12px / 无字距：3–4 个汉字（36–48px）都能完整显示，不会卡在亚像素上被省略号截掉 */
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.86);
+  letter-spacing: 0;
+}
+/* 细条「跟随玻璃效果」时，底色变成背后的真实画面（可能很亮）→
+   文字必须像横幅那样跟随背景亮度自适应，否则亮壁纸下白字贴白墙看不清 */
+body[data-state="strip"][data-strip="glass"] .s-row,
+body[data-state="strip"][data-strip="glass"] .s-num { color: var(--ink); }
+body[data-state="strip"][data-strip="glass"] .s-unit { color: var(--ink-soft); }
+
+/* —— 放大版灵动岛 expanded（胶囊形） —— */
+.e-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  white-space: nowrap;
+  padding: 0 10px;
+}
+.e-emoji { font-size: 19px; transform: translateY(2px); }
+.e-name {
+  font-size: 16px;
+  font-weight: 700;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.e-num {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.e-unit { font-size: 14px; font-weight: 700; color: var(--ink-soft); }
+.e-time {
+  margin-left: auto;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* —— 倒计时窗口 zoom（正方形 = 屏幕高 1/4；事件名在上方，中部突出天数；
+       字号由渲染器按窗口高度设置 CSS 变量） —— */
+.z-wrap { width: 100%; height: 100%; padding: 10px 22px 48px; display: flex; flex-direction: column; }
+.z-head { display: flex; align-items: center; gap: 8px; font-size: var(--z-head, 22px); }
+.z-emoji { font-size: var(--z-emoji, 32px); }
+.z-label { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.z-mid { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 0; }
+.z-row1 { display: flex; align-items: baseline; gap: 12px; }
+.z-row2 { display: flex; align-items: center; }
+.z-num {
+  font-size: var(--z-num, 120px);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.z-unit { font-size: var(--z-unit, 34px); font-weight: 700; }
+.z-time { font-size: var(--z-time, 30px); font-weight: 700; letter-spacing: 2px; white-space: nowrap; }
+.z-time .sep { color: var(--ink-soft); font-weight: 600; }
 
 /* ===== 系统通知弹窗（黑底白字；只含标题+正文，正文最多 2 行） =====
    免打扰按钮在 #dnd-bar（弹窗下方独立胶囊），见上方。行高固定 px，与渲染器测量一致。 */
@@ -635,6 +1331,79 @@ body[data-state="dock"] #pill {
 .dk-bar { height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
 .dk-bar > i { display: block; height: 100%; background: #ffffff; border-radius: 3px; transition: width 0.45s cubic-bezier(0.22, 0.61, 0.36, 1); }
 
+/* —— 计时坞芯片按钮（创建页「开始/取消」与操作页「暂停/取消倒计时/返回」共用）——
+   这里之前**没有任何基础样式**，只有一组 dock 作用域的颜色覆盖，
+   于是按钮走浏览器默认外观：方角、UA 边框、默认字号 —— 看着很糙。
+   下面的取值按人因研究定：
+     · 目标尺寸：WCAG 2.5.5 指针目标最小 24×24（AA）/ 44×44（AAA），Apple HIG 44pt、Material 48dp。
+       桌面小窗不适宜真的放到 44px 视觉高，所以**视觉 32px + 可点区外扩到约 44px**（见 ::before），
+       兼顾观感与"点得中"（Fitts 定律：目标越大、距离越近，命中越快越准）。
+     · 层次：主操作最重（实心白），次要操作最轻（弱描边），危险操作明确但不抢主操作
+       （Apple Action Sheet / VA.gov 按钮决策：危险项要可辨识，但不该压过用户的主路径）。
+     · 动效：背景/描边 140ms、位移 100ms，均取"感知即时"区间；只动 transform/色彩，不触发布局。 */
+.dk-chip {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease-out, border-color 0.14s ease-out, color 0.14s ease-out, transform 0.1s ease-out;
+}
+/* 命中区外扩：视觉高 32px，实际可点范围约 44px 高（含岛内边距），
+   对着 WCAG 2.5.5 的 44×44 目标；空元素不改变任何视觉。 */
+.dk-chip::before {
+  content: "";
+  position: absolute;
+  inset: -6px -4px;
+  border-radius: inherit;
+}
+.dk-chip:hover { background: rgba(255, 255, 255, 0.18); }
+/* 按下轻微内缩：触摸/点击的即时反馈（与岛的 press-feedback 同一语言） */
+.dk-chip:active { transform: scale(0.96); }
+.dk-chip:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 2px; }
+/* 主操作（开始 / 暂停 / 继续）：唯一实心块，视觉落点 */
+.dk-chip.done {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #0b0b0f;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.dk-chip.done:hover { background: #f1f1f3; border-color: #f1f1f3; }
+/* 次要操作（取消 / 返回）：最轻的一档，静止时不与主操作争视线，悬停才浮现底色 */
+.dk-chip.ghost {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+.dk-chip.ghost:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.26);
+  color: #ffffff;
+}
+/* 危险操作（取消倒计时）：用红"标记"而非红"填满" —— 可辨识，但不比主操作更响 */
+.dk-chip.danger {
+  background: rgba(255, 69, 58, 0.12);
+  border-color: rgba(255, 69, 58, 0.48);
+  color: #ff6b60;
+}
+.dk-chip.danger:hover { background: rgba(255, 69, 58, 0.22); border-color: rgba(255, 69, 58, 0.62); }
+
 /* 计时坞恒定黑底白字：不跟随"背景亮度自适应"（data-ink/data-bg）——
    否则壁纸亮时它会被改成浅底深字，看不出是通知那种黑底倒计时。
    （通知形态也是同样处理：固定黑底。） */
@@ -647,20 +1416,8 @@ body[data-state="dock"] .dk-ring-track { stroke: rgba(255, 255, 255, 0.16) !impo
 body[data-state="dock"] .dk-ring-bar { stroke: #ffffff !important; }
 body[data-state="dock"] .dk-bar { background: rgba(255, 255, 255, 0.14) !important; }
 body[data-state="dock"] .dk-bar > i { background: #ffffff !important; }
-body[data-state="dock"] .dk-chip {
-  color: #ffffff !important;
-  background: rgba(255, 255, 255, 0.12) !important;
-  border-color: rgba(255, 255, 255, 0.28) !important;
-}
-body[data-state="dock"] .dk-chip.done { background: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
-body[data-state="dock"] .dk-chip.ghost { background: transparent !important; color: rgba(255, 255, 255, 0.75) !important; }
-body[data-state="dock"] .dk-chip.danger { background: rgba(255, 69, 58, 0.16) !important; color: #ff6b60 !important; border-color: rgba(255, 69, 58, 0.45) !important; }
-body[data-state="dock"] #buttons .ib {
-  color: rgba(255, 255, 255, 0.85) !important;
-  background: rgba(255, 255, 255, 0.1) !important;
-  border-color: rgba(255, 255, 255, 0.24) !important;
-  font-size: 11px !important;
-}
+/* 注：.dk-chip 的黑底白字配色已由上方基础样式（.dk-chip / .done / .ghost / .danger）保证，
+   这里不再重复用 !important 覆盖 —— 那样会把 :hover 的反馈一并压掉。 */
 
 .n-wrap {
   width: 100%; height: 100%;
@@ -943,3 +1700,142 @@ body[data-state="dock"] #buttons .ib {
   80% { opacity: 0.18; }
   84% { opacity: 0.7; }
 }
+
+/* —— 短时倒计时：绿色线描秒表（岛左侧）+ 剩余时间（岛右侧）—— */
+.s-watch { display: inline-flex; align-items: center; color: #34c759; }
+.s-watch .watch { width: 15px; height: 15px; }
+/* 秒表形状给到足够的对比：纯线描 + 绿色，避免看上去像装饰图标 */
+.s-timer { font-variant-numeric: tabular-nums; letter-spacing: -0.2px; }
+body[data-state="strip"] .s-watch { margin-right: 1px; }
+/* 大窗口：计时剩余居中显示 */
+.z-timer-mid { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.z-watch .watch { width: 34px; height: 34px; }
+.z-num.z-timer { font-variant-numeric: tabular-nums; font-weight: 800; }
+.z-bar { margin-top: 10px; height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.16); overflow: hidden; }
+.z-bar > i { display: block; height: 100%; background: #34c759; border-radius: 3px; }
+
+/* —— 创建页：横向滑动刻度（对数坐标）——
+   .dk-edit 是创建页/操作页的芯片行容器：必须显式 flex，否则子元素按行内流布，
+   刻度、时长标签与按钮会挤成一团、还会压到底边。 */
+.dk-edit { display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; min-height: 32px; }
+/* 创建页：**设置计时时长是这一页的主角**，所以整块竖排居中 ——
+   第一行刻度、第二行（时长 + 开始 / 取消），而不是把它挤在底部一行当附属控件。 */
+/* 创建页一行：**左边时间** + 中间游标尺 + 右边两个大方块按钮。
+   顶部留 52px（叠加 .dk-wrap 的 12px = 起于 y64）让整块落在盖板（y11~37）下方。
+   这里改成**顶部对齐**（.dk-wrap 默认是垂直居中）：否则收缩窗口高度时，
+   内容会被居中逻辑往上推、重新钻进盖板底下。 */
+body[data-dock-page="picker"] .dk-wrap { justify-content: flex-start; }
+.dk-picker {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding-top: 52px;
+  flex: 1 1 auto;
+}
+/* 设置的时间显示在**刻度条左侧**：固定宽度 + tabular-nums，
+   避免数字位数变化时刻度条跟着左右抖动。 */
+.dk-pick-label {
+  font-size: 21px; font-weight: 700; color: #ffffff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+  flex: 0 0 auto;
+  min-width: 116px;
+  text-align: right;
+  white-space: nowrap;
+}
+.dk-pick-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+.dk-pick-acts { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+/* 方方正正的大按钮：54×54、13px 圆角（远超 WCAG 2.5.5 的 24px、也超 Apple HIG 的 44pt） */
+.dk-big {
+  width: 54px; height: 54px;
+  padding: 0;
+  border-radius: 13px;
+  border: 2px solid transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: transform 0.1s ease-out, background 0.14s ease-out;
+}
+/* 图标用 SVG 画（等宽描边、方头方角），不依赖字体里的 ✓ ✗ 字形 */
+.dk-big svg { width: 30px; height: 30px; display: block; }
+.dk-big:active { transform: scale(0.94); }
+.dk-big.ok { background: #34c759; color: #06210d; }
+.dk-big.ok:hover { background: #3ddc63; }
+.dk-big.no { background: rgba(255, 255, 255, 0.16); border-color: rgba(255, 255, 255, 0.5); color: #fff; }
+.dk-big.no:hover { background: rgba(255, 255, 255, 0.26); }
+.dk-picker .dk-ruler { flex: 1 1 auto; min-width: 0; }
+/* —— 对数游标尺（创建页的主控件）——
+   中间一条**固定不动**的指示线，刻度尺在它下面左右滑动（滑动无上限）。
+   刻度用绝对定位（left 由 JS 按对数步长算），容器只负责裁剪与定位。 */
+.dk-ruler {
+  position: relative;
+  width: 100%;
+  height: 27px;
+  overflow: hidden;
+  cursor: ew-resize;
+  touch-action: none;
+  /* 两端淡出：暗示"还能继续滑"，而不是滑到头了 */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 14%, #000 86%, transparent 100%);
+}
+.dk-ruler-track { position: absolute; inset: 0; }
+.dk-ruler .dk-tick {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.38);
+}
+.dk-ruler .dk-tick.major { width: 3px; margin-left: -1.5px; background: rgba(255, 255, 255, 0.62); }
+/* 固定的选中指示线（不随刻度移动）—— 比刻度更高、更亮，一眼看出"读这里" */
+.dk-ruler-needle {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -1px;
+  width: 3px;
+  margin-left: -1.5px;
+  background: #34c759;
+  border-radius: 2px;
+  box-shadow: 0 0 9px rgba(52, 199, 89, 0.95);
+  pointer-events: none;
+}
+.dk-ruler-needle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  width: 0; height: 0;
+  margin-left: -4px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid #34c759;
+}
+.dk-pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+}
+.dk-pick-label {
+  font-size: 16px; font-weight: 700; color: #ffffff;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto; min-width: 0; text-align: center;
+  white-space: nowrap;
+}
+.dk-picker .dk-chip { flex: 0 0 auto; }
+/* 创建页：**只保留游标尺控件**，并让它垂直居中。
+   原因：盖板（顶部那块 87×26 的黑色传感器胶囊）是**永久置顶**的独立窗口，
+   实测正好压在灵动岛窗口的顶部正中（盖板 87×26@916,11，坞窗口 576×195@672,0 → 完全重叠）。
+   之前把大号数字和标题居中放在上半区，等于把文字直接送到盖板底下 —— 也就是"盖板挡住文字"。
+   现在上半区（环形进度 / 大数字 / 标题 / 细进度条）整体省掉：
+   选中的时间在盖板上已经显示（左侧），坞里只留控件，居中后自然落在盖板下方。 */
+body[data-dock-page="picker"] .dk-main,
+body[data-dock-page="picker"] .dk-bar { display: none; }
