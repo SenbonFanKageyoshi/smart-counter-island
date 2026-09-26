@@ -15,7 +15,7 @@
     "demo": "electron . --demo-notify",
     "icons": "node scripts/gen-icons.js",
     "pack": "electron-builder --win dir",
-    "dist": "electron-builder --win dir && node scripts/rcedit-exe.js && electron-builder --win --prepackaged release/win-unpacked"
+    "dist": "electron-builder --win dir -p never && node scripts/rcedit-exe.js && electron-builder --win --prepackaged release/win-unpacked -p never"
   },
   "devDependencies": {
     "electron": "^33.2.0",
