@@ -292,7 +292,6 @@ async function init() {
   $('#displayIndex').value = S.ui.displayIndex ?? 0;
   $('#display-index-wrap').hidden = S.ui.display !== 'index';
   $('#opStrip').value = Math.round((S.ui.opacity.strip ?? 0.6) * 100);
-  $('#opExpanded').value = Math.round((S.ui.opacity.expanded ?? 0.9) * 100);
   $('#opZoom').value = Math.round((S.ui.opacity.zoom ?? 0.96) * 100);
   $('#opCorner').value = Math.round((S.ui.opacity.corner ?? 0.9) * 100);
   $('#opProgress').value = Math.round((S.ui.opacity.progress ?? 0.55) * 100);
@@ -423,7 +422,8 @@ async function init() {
   $('#wxCity').value = wxCfg.city || '';
   $('#wxRefresh').value = typeof wxCfg.refreshMin === 'number' ? wxCfg.refreshMin : 30;
   $('#wxUnit').value = wxCfg.unit === 'f' ? 'f' : 'c';
-  $('#wxShow').value = wxCfg.showInIsland || 'always';
+  // 旧配置的 'banner' 一并归到 always（细条那条路已作废，天气只看盖板）
+  $('#wxShow').value = wxCfg.showInIsland === 'off' ? 'off' : 'always';
   // 天气位置已固定为「盖板上」，不再有细条位置可选（见 config.html 的说明）
   $('#wxAnim').checked = wxCfg.anim !== false;
   $('#wxIntensity').value = typeof wxCfg.animIntensity === 'number' ? wxCfg.animIntensity : 100;
@@ -1109,7 +1109,7 @@ function renderEvents() {
         </div>
         <div class="e-days ${past ? 'past' : ''}">${past ? '已过 ' + d + ' 天' : '剩余 ' + d + ' 天'}</div>
         <div class="e-ops">
-          <button class="btn ${e.pinned ? 'primary' : ''}" data-act="pin" data-id="${esc(e.id)}" title="置顶：固定显示在灵动岛和横幅上">${e.pinned ? '取消置顶' : '置顶'}</button>
+          <button class="btn ${e.pinned ? 'primary' : ''}" data-act="pin" data-id="${esc(e.id)}" title="置顶：固定显示在灵动岛上">${e.pinned ? '取消置顶' : '置顶'}</button>
           <button class="btn" data-act="toggle" data-id="${esc(e.id)}">${e.enabled === false ? '启用' : '停用'}</button>
           <button class="btn" data-act="edit" data-id="${esc(e.id)}">编辑</button>
           <button class="btn danger" data-act="del" data-id="${esc(e.id)}">删除</button>
@@ -1148,7 +1148,7 @@ $('#event-list').addEventListener('click', async (e) => {
   } else if (btn.dataset.act === 'edit') {
     openEditor(ev);
   } else if (btn.dataset.act === 'pin') {
-    // 置顶互斥：只有一个事件置顶（决定灵动岛/横幅显示哪个事件）
+    // 置顶互斥：只有一个事件置顶（决定灵动岛显示哪个事件）
     const next = (S.events || []).map((x) => ({ ...x, pinned: x.id === id && !ev.pinned }));
     S = await window.config.update({ events: next });
     renderEvents();
@@ -1219,7 +1219,6 @@ bind('#display', (el) => {
 });
 bind('#displayIndex', (el) => ({ ui: { displayIndex: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#opStrip', (el) => ({ ui: { opacity: { strip: parseInt(el.value, 10) / 100 } } }));
-bind('#opExpanded', (el) => ({ ui: { opacity: { expanded: parseInt(el.value, 10) / 100 } } }));
 bind('#opZoom', (el) => ({ ui: { opacity: { zoom: parseInt(el.value, 10) / 100 } } }));
 bind('#opCorner', (el) => ({ ui: { opacity: { corner: parseInt(el.value, 10) / 100 } } }));
 bind('#opProgress', (el) => ({ ui: { opacity: { progress: parseInt(el.value, 10) / 100 } } }));
@@ -1565,7 +1564,7 @@ bind('#wxEnabled', (el) => ({ weather: { enabled: el.checked } }));
 bind('#wxCity', (el) => ({ weather: { city: el.value.trim(), lat: null, lon: null, resolvedName: '' } }));
 bind('#wxRefresh', (el) => ({ weather: { refreshMin: Math.max(10, Math.min(720, parseInt(el.value, 10) || 30)) } }));
 bind('#wxUnit', (el) => ({ weather: { unit: el.value === 'f' ? 'f' : 'c' } }));
-bind('#wxShow', (el) => ({ weather: { showInIsland: ['banner', 'always', 'off'].includes(el.value) ? el.value : 'always' } }));
+bind('#wxShow', (el) => ({ weather: { showInIsland: el.value === 'off' ? 'off' : 'always' } }));
 // 天气位置固定为盖板，不再绑定 pos
 bind('#wxAnim', (el) => ({ weather: { anim: el.checked } }));
 bind('#wxIntensity', (el) => ({ weather: { animIntensity: Math.max(0, Math.min(200, parseInt(el.value, 10) || 0)) } }));

@@ -825,32 +825,10 @@ function stopwatchSvg() {
  * 动画关闭或强度 0 时只出静态图标（图标形状由 data-anim 决定，CSS keyframes 负责动）。
  */
 function wxChipHtml() {
-  if (!weather || weather.show === false) return '';
-  // 天气**只在盖板上显示**（方案 A）：灵动岛**任何形态**都不再画 chip。
-  // 「细条上放哪儿」这个选项已从配置页移除，但老配置里可能还留着 pos:'left'/'right' ——
-  // 一律忽略：细条已经不再为天气预留槽位，chip 画上去会挤到盖板底下（盖板永久置顶，会把它压住）。
-  if (state === 'strip') return '';
-  // 「天气位置 = 盖板上」：天气已经在中间那块盖板上显示 → 岛内也不再画，
-  // 否则同一份天气会出现两次（盖板一次、大窗口又一次）
-  if (weather.pos === 'cover') return '';
-  // 常驻（always）= 细条也显示；'banner' 只在横幅/大卡片显示（细条保持极简）
-  if (weather.mode !== 'always' && state !== 'expanded' && state !== 'zoom') return '';
-  const iv = Math.max(0, Math.min(200, Number(weather.intensity) || 0)) / 100;
-  // 动画关闭或强度 0 → 静态图标（data-anim=none 时不挂 keyframes，省电也便于断言）
-  const anim = weather.animEnabled === false || iv === 0 ? 'none' : weather.anim || 'none';
-  const unit = weather.unit === 'f' ? '°F' : '°';
-  const temp = weather.temp == null ? '--' : `${Math.round(weather.temp)}${unit}`;
-  const tip = `${weather.city || ''} ${weather.text || ''}${weather.stale ? '（数据已过期）' : ''}`.trim();
-  // 细条空间紧：只出图标 + 温度（紧凑态），文字留给横幅/大卡片
-  const compact = state === 'strip';
-  const side = compact && weather.pos === 'left' ? ' data-side="left"' : '';
-  // 去掉所有图标内容：不再渲染 .wx-sky（图标形状与动画），只留温度 + 天气文字
-  return (
-    `<span class="wx${weather.stale ? ' wx-stale' : ''}" id="wx" data-anim="${ESC(anim)}" data-tone="${ESC(weather.tone || 'cool')}"${compact ? ' data-compact="1"' : ''}${side}` +
-    ` style="--wx-i:${iv.toFixed(2)}" title="${ESC(tip)}">` +
-    `<b class="wx-temp">${ESC(temp)}</b><em class="wx-text">${ESC(weather.text || '')}</em>` +
-    '</span>'
-  );
+  // 天气**只在盖板上显示**（盖板窗口负责画），灵动岛任何形态都不再画 chip。
+  // 原先这里按 pos（left/right/cover）与 mode（always/banner）决定画不画 ——
+  // 那两个配置项已随"天气只在盖板"一起作废，分支全部删掉，否则老配置会画出无处安放的 chip。
+  return '';
 }
 
 /** 通知形态的整条岛天气特效：雨丝 / 雪花 / 晴空 / 云影 / 雷闪 / 雾带（层数按动画强度缩放） */
@@ -981,6 +959,12 @@ function render() {
       // 这三个动作都直接作用于**计时器本身**，不再去删事件或跳过节假日 ——
       // 计时坞已与事件/节假日解耦，只服务于用户自己设的那个倒计时。
       chips =
+        d.kind === 'holiday'
+          ? '<div class="dk-edit dk-menu">' +
+            '<button class="dk-chip done" data-act="holidayAck">知道了</button>' +
+            '<button class="dk-chip ghost" data-act="holidaySkip">本次跳过</button>' +
+            '</div>'
+          : '<div class="dk-edit dk-menu">' +
         '<div class="dk-edit dk-menu">' +
         (d.paused
           ? '<button class="dk-chip done" data-act="timerResume">继续</button>'

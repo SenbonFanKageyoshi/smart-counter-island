@@ -346,6 +346,11 @@ function load() {
     cache.smart.fullscreenState = 'strip';
     migrated = true;
   }
+  // 桌宠未开发完成、暂停使用：强制关掉（页面已灰置，这里保证它真的不跑）
+  if (cache.pet && cache.pet.enabled !== false) {
+    cache.pet.enabled = false;
+    migrated = true;
+  }
   // —— 「计时坞」不再是可常驻的手动模式 ——
   // 之前长按灵动岛进入坞时会写成 manual.mode = 'dock' 并被持久化，
   // 于是以后每次启动都直接停在计时坞（用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。

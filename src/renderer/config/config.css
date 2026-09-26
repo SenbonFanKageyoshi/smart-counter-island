@@ -604,3 +604,26 @@ textarea::placeholder { color: var(--muted); }
 .wx-rule.off .task-info { opacity: 0.45; }
 #wx-status { font-weight: 600; color: var(--ink); }
 #wx-resolve, #wx-test-note { line-height: 1.6; }
+
+/* ===== 桌宠：暂停使用（未开发完成）=====
+   整页灰置 + 不可交互，只把顶部那条提示留成正常样式，
+   免得用户以为是自己配置错了、在灰色选项上反复点。 */
+#tab-pet.pet-paused > *:not(.paused-note) {
+  opacity: 0.32;
+  filter: grayscale(1);
+  pointer-events: none;
+  user-select: none;
+}
+.paused-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid rgba(214, 141, 0, 0.45);
+  background: rgba(214, 141, 0, 0.12);
+  color: var(--ink);
+}
+.paused-note b { font-size: 13.5px; }
+.paused-note span { font-size: 12px; line-height: 1.5; color: var(--muted); }

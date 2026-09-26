@@ -191,19 +191,6 @@
       </div>
     </div>
     <div class="field">
-      <label>横幅</label>
-      <div class="pos-row">
-        <select id="pos-expanded-mode">
-          <option value="top-center">顶部居中</option>
-          <option value="top-left">顶部居左</option>
-          <option value="top-right">顶部居右</option>
-          <option value="custom">自定义坐标</option>
-        </select>
-        <span class="pos-xy"><span>X</span><input type="number" id="pos-expanded-x" step="1"></span>
-        <span class="pos-xy"><span>Y</span><input type="number" id="pos-expanded-y" step="1"></span>
-      </div>
-    </div>
-    <div class="field">
       <label>倒计时窗口</label>
       <div class="pos-row">
         <select id="pos-zoom-mode">
@@ -233,7 +220,6 @@
       <label>透明度</label>
       <div class="opacity-row">
         <span>灵动岛</span><input type="range" id="opStrip" min="0" max="100" step="1">
-        <span>横幅</span><input type="range" id="opExpanded" min="0" max="100" step="1">
         <span>倒计时窗口</span><input type="range" id="opZoom" min="0" max="100" step="1">
         <span>角落卡片</span><input type="range" id="opCorner" min="0" max="100" step="1">
         <span>进度条</span><input type="range" id="opProgress" min="0" max="100" step="1">
@@ -479,9 +465,8 @@
 
     <div class="field"><label>岛内显示</label>
       <select id="wxShow">
-        <option value="always">常驻（细条 / 横幅 / 大卡片都显示）</option>
-        <option value="banner">仅横幅 / 大卡片（细条保持极简）</option>
-        <option value="off">不显示（只用提醒）</option>
+        <option value="always">显示天气（画在盖板上）</option>
+        <option value="off">关闭天气</option>
       </select></div>
 
     <div class="field">
@@ -636,7 +621,12 @@
   </section>
 
   <!-- ============ 桌宠 ============ -->
-  <section id="tab-pet" class="tabpage">
+  <section id="tab-pet" class="tabpage pet-paused" data-paused="1">
+    <!-- 桌宠未开发完成、暂停使用：整页灰置 + 不可交互，只留这条提示醒目 -->
+    <div class="paused-note">
+      <b>桌宠功能暂停使用</b>
+      <span>该功能尚未开发完成，暂时关闭。下面的设置项会保留，但当前版本不生效。</span>
+    </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="petEnabled"> 启用桌宠（课间互动 / 提醒上课 / 答疑）</label>
     </div>

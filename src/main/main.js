@@ -4836,14 +4836,15 @@ function runTests() {
       await sleep(900);
       dom30 = await readWx30();
       ok(
-        `T30 横幅显示天气 chip 且图标动画正确 (state=${dom30.state} ${dom30.text} ${dom30.temp} anim=${dom30.anim} tone=${dom30.tone})`,
-        dom30.state === 'expanded' && dom30.hidden === false && dom30.anim === 'rain' && dom30.tone === 'wet' && dom30.text === '小雨' && dom30.temp.includes('21')
+        `T30 天气不上岛（横幅也不画 chip，只在盖板上）(state=${dom30.state} has=${dom30.has})`,
+        // 天气已改为「只在盖板显示」：灵动岛包括横幅在内都不再画 chip
+        dom30.state === 'expanded' && dom30.has === false
       );
       settings.update({ weather: { anim: false } });
       island.pushWeather(true);
       await sleep(700);
       dom30 = await readWx30();
-      ok(`T30 关掉动画→静态图标 (anim=${dom30.anim})`, dom30.anim === 'none');
+      ok(`T30 关掉动画→岛内仍不画天气 (has=${dom30.has})`, dom30.has === false);
       settings.update({ weather: { anim: true } });
       island.pushWeather(true);
       await sleep(700);
@@ -4853,8 +4854,8 @@ function runTests() {
       island.pushWeather(true);
       await sleep(900);
       dom30 = await readWx30();
-      ok(`T30 无倒计时事件时仍显示天气 (state=${dom30.state} has=${dom30.has} ${dom30.text} ${dom30.temp} anim=${dom30.anim})`,
-        dom30.state === 'expanded' && dom30.has === true && dom30.anim === 'rain' && dom30.temp.includes('21'));
+      ok(`T30 无倒计时事件时岛内同样不画天气 (state=${dom30.state} has=${dom30.has})`,
+        dom30.state === 'expanded' && dom30.has === false);
 
       // 9) 提醒时整条岛的天气特效
       island.showNotification('降雨提醒', '未来 6 小时内可能下雨（降水概率 80%）', { alert: true, keywords: ['雨'], weather: 'rain' });
@@ -5336,17 +5337,35 @@ function runTests() {
       settings.update({ holidays: { enabled: true, leadDays: 30, items: items34 } });
       island.applySettings();
       await sleep(1400); // 等动画结束
+      // —— 节假日到点自动展开计时坞：**单独成段**，进段前先把状态钉死在灵动岛 ——
+      // （原先直接挂在上面那串状态变更后面，时序太脆：状态还停在 expanded 就断言，必然误判。）
+      island.dockMenu = false;
+      island.dockEdit = false;
+      island.setManual('auto');
+      island.setState('strip');
+      island.lastAutoSwitch = 0;
+      island.holidayShownKey = null; // 清掉「已弹过」的记忆，确保这一段真的能触发
+      await sleep(1200);
       island.tick();
-      // 自动模式 + 节假日到点：应保持灵动岛（历史上那条 dockOn 分支恒为 false，是死代码，已移除）
-      const dockAuto34 = island.decideState({
-        idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
-        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
-        state: 'strip',
-      });
+      await sleep(700);
+      const holPayload34 = island.dockPayload(new Date(2026, 8, 23, 10, 0, 0).getTime());
       ok(
-        `T34 节假日到点不再自动进坞（自动模式判定=${dockAuto34}，期望 strip）`,
-        dockAuto34 === 'strip'
+        `T34 节假日到点自动展开计时坞 (坞=${island.dockMenu} 状态=${island.state} 载荷=${JSON.stringify(holPayload34 && holPayload34.title)})`,
+        island.dockMenu === true && island.state === 'dock' && !!holPayload34 && String(holPayload34.title || '').includes('距离')
       );
+      // 「知道了」→ 收起，且同一节日不再自动弹
+      island.onAction({ type: 'holidayAck' });
+      await sleep(1000);
+      island.tick();
+      await sleep(700);
+      ok(
+        `T34 「知道了」后收起且不再自动弹 (状态=${island.state} 坞=${island.dockMenu})`,
+        island.state === 'strip' && island.dockMenu === false
+      );
+      // 后面测计时坞时把节假日关掉，免得它再抢开坞
+      settings.update({ holidays: { enabled: false } });
+      island.applySettings();
+      await sleep(700);
       // 「计时坞」不再是可常驻的手动模式：即使把 mode 设成 'dock' 也不进坞
       //（坞只由「长按灵动岛」打开 —— 这正是"启动必须是灵动岛"的保证）。
       settings.update({ manual: { mode: 'dock' } });

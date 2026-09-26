@@ -381,7 +381,9 @@ class Island {
 
       const cfg = st.weather || {};
       const wmod = require('./weather');
-      if (cfg.enabled !== false && cfg.showInIsland !== 'off' && cfg.pos === 'cover') {
+      // 天气只在盖板上显示。这里**不能**再要求 pos==='cover' ——
+      // 老配置的 pos 是旧默认值 'right'，那样会导致「盖板不显示、岛内也不显示」= 天气彻底消失。
+      if (cfg.enabled !== false && cfg.showInIsland !== 'off') {
         const w = wmod.snapshotForIsland(nowMs);
         if (w && w.show !== false) out.weather = { ...w, cover: true };
       }
@@ -531,17 +533,12 @@ class Island {
       细条本身 116 宽，禁区分割布局再占 zoneW+槽位，天气挂在最右边，所以总宽 = 三者之和 + 这一槽。
       位置：'right' 右端 / 'left' 左端 / 'cover' 盖板上（细条让位，chip 由盖板窗口自己画）。 */
   weatherSlot() {
-    // 天气**只在盖板上显示**（用户定的方案 A）：细条不再为它预留任何宽度。
-    // 于是细条宽度恒定 = 本体 116 + 禁区 + 左右槽位，不再随天气开关在 229 ↔ 317 之间跳。
-    // ⚠️ 若盖板未启用（cameraNotch.enabled=false），天气就哪儿都不显示 —— 这是预期行为，
-    //    配置页已写明"天气需要先启用盖板"。
+    // 天气只在盖板上显示 → 细条永远不为它预留宽度（恒 0）。
     return 0;
   }
 
   /** 天气画在哪儿：永远 'cover'（细条窗口不画 chip，交给盖板窗口自己画） */
-  weatherPos() {
-    return 'cover';
-  }
+  weatherPos() { return 'cover'; }
 
   /** 各状态「本体尺寸」：
       - split 布局（细条 / 进度条）：加宽出禁区宽度，黑底至少裹住禁区；
@@ -1141,12 +1138,48 @@ class Island {
    * 没有正在跑的计时 → null（渲染层显示创建页）。
    * 注意：这个方法**必须存在** —— 状态载荷里会调用它，缺了会在每次推送状态时抛异常。
    */
+  /** 节假日到点 → **自动展开计时坞**（用户要求恢复这一条）。
+      手动计时那条路不受影响：仍然只有长按才开坞。
+      同一节日只自动弹一次（holidayShownKey 记住），免得一直骚扰。 */
+  checkHoliday(nowMs) {
+    try {
+      if (this.dockEdit || this.dockMenu) return;                 // 坞已经开着，别抢
+      // 只避开真正「抢注意力」的两种形态；横幅之类不算，到点就该弹。
+      // （原先要求 state === 'strip' 太严：上一段用例把状态留在 expanded 时整个不触发。）
+      if (this.state === 'notify' || this.state === 'zoom') return;
+      const t = this.timerPayload();
+      if (t && t.active) return;                                  // 手动计时优先
+      const h = require('./holiday').dueHoliday(settings.load(), nowMs || Date.now());
+      if (!h) return;
+      const key = h.skipKey || `${h.name}|${h.days}`;
+      if (this.holidayShownKey === key) return;                   // 这次已经弹过
+      this.holidayShownKey = key;
+      this._holidayKey = key;
+      // 触发前先复位到灵动岛：别从一个中间态直接跳坞，几何动画会别扭
+      this.setManual('auto');
+      if (this.state !== 'strip') this.setState('strip');
+      this.dockMenu = true;
+      this.setState('dock');
+      this.sendState();
+      this.pushCoverContent(true);
+    } catch (e) {
+      /* 节假日逻辑出错不影响小岛 */
+    }
+  }
+
   dockPayload(nowMs) {
     try {
       // 计时坞只服务「手机时钟式倒计时」：返回当前计时的状态，供操作页显示剩余时间与暂停/取消。
       // 它**不再**自动挑选节假日或事件来显示 —— 坞里出现的永远是用户自己设的那个计时。
       const t = this.timerPayload(); // { active, leftMs, totalMs, paused, label }
-      if (!t || !t.active) return null;
+      if (!t || !t.active) {
+        // 没有手动计时 → 坞里显示「到点的那个节假日」（由 checkHoliday 自动打开）
+        const hol = require('./holiday');
+        const h = hol.dueHoliday(settings.load(), nowMs || Date.now());
+        const d = h && hol.dockText(h);
+        if (d) return { ...d, kind: 'holiday', pct: 0, at: 0, leftMs: 0, skipKey: h.skipKey };
+        return null;
+      }
       const total = t.totalMs > 0 ? t.totalMs : 1;
       const sec = Math.max(0, Math.floor(t.leftMs / 1000));
       const p2 = (n) => String(n).padStart(2, '0');
@@ -1328,6 +1361,7 @@ class Island {
 
     // —— 系统通知接管：检测新通知 / 通知显示保持 / 免打扰过期 ——
     this.handleToasts(p);
+    this.checkHoliday(p && p.nowMs); // 节假日到点 → 自动展开计时坞
     if (this.notifyDndUntil && Date.now() > this.notifyDndUntil) this.notifyDndUntil = 0;
 
     if (this.state === 'notify') {
@@ -1631,6 +1665,27 @@ class Island {
         this.pushCoverContent(true); // 盖板恢复日常内容
         this.sendState();
         break;
+      case 'holidayAck':
+        // 「知道了」：收起坞，本次不再自动弹（holidayShownKey 已记住）
+        this.dockMenu = false;
+        this.setState('strip');
+        this.pushCoverContent(true);
+        this.sendState();
+        break;
+      case 'holidaySkip': {
+        // 「本次跳过」：写进 holidays.skipped —— 之后不再提醒这一个节日
+        try {
+          const st = settings.load();
+          const cur = (st.holidays && Array.isArray(st.holidays.skipped)) ? st.holidays.skipped : [];
+          const key = this._holidayKey;
+          if (key && !cur.includes(key)) settings.update({ holidays: { skipped: cur.concat([key]) } });
+        } catch (e) { /* ignore */ }
+        this.dockMenu = false;
+        this.setState('strip');
+        this.pushCoverContent(true);
+        this.sendState();
+        break;
+      }
       case 'dockPick':
         // 创建页刻度变化：记下选中的分钟数 —— 盖板左边要显示"选中的时间"，
         // 而选中的值掌握在渲染层（刻度控件）手里，所以由它上报。
