@@ -59,12 +59,26 @@ jobs:
         shell: bash
         run: |
           npx electron . --test --test-fast 2>&1 | tee test.log
-          BAD=$(grep '^\[test\] FAIL' test.log | grep -vE 'T18 |T21 |T22 |T23 ' | wc -l)
+          ALL=$(grep '^\[test\] FAIL' test.log || true)
+          BAD_LIST=$(echo "$ALL" | grep -vE 'T18 |T21 |T22 |T23 ' | grep . || true)
+          BAD=$(echo "$BAD_LIST" | grep -c . || true)
           echo "非环境类失败: $BAD"
           if [ "$BAD" -ne 0 ]; then
-            echo "::error::自检未通过（$BAD 条非环境类失败）"
+            # 每条失败做成 check-run 注解：本地直连 GitHub 不稳、匿名下载日志是 403，
+            # 而注解可以通过公开 API 读到（/check-runs/<id>/annotations），排查不用 token。
+            echo "$BAD_LIST" | head -25 | while IFS= read -r line; do
+              echo "::error title=self-test::$line"
+            done
             exit 1
           fi
+
+      - name: 失败时留档自检日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          if-no-files-found: ignore
 
       - name: 打包
         run: npm run dist
