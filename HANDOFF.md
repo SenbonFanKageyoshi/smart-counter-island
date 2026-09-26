@@ -105,6 +105,21 @@ git push origin main && git tag -a v3.2.0 -m 'Smart Counter Island 3.2.0' && git
    - 自检里写死的 `schemaVersion === 2` 改成实时读 `settings.SCHEMA_VERSION` —— 这次版本号一升就把这处写死暴露了。
    - 自检 311 项全绿。
 
+### 发布链路：一次真实的 CI 首发（2026-09-26，v3.2.0 已发出）
+
+踩到并修好的四件事（**下次发版照这个顺序做**）：
+
+1. **`release.yml` 必须先落到默认分支** —— 否则远端 Actions 里 `workflows=0`，推 tag 也不会有任何反应（本次是先推 main 再推 tag 才跑起来的）。
+2. **`git push -f origin <tag>` 覆盖同名 tag 不会触发 workflow**（内容没变化时更不会）。要么删掉 tag 再推，要么用 **`workflow_dispatch` 手动触发**（workflow 里已留入口，`tag` 参数填版本号）—— 手动触发走 API：`POST /actions/workflows/release.yml/dispatches`，body `{"ref":"v3.2.0","inputs":{"tag":"v3.2.0"}}`。
+3. **electron-builder 看到 tag 会自己去发布**（日志 `reason=tag is defined`），没有 `GH_TOKEN` 就直接报错退出（`⨯ GitHub Personal Access Token is not set`）—— 已在 `npm run dist` 的两条命令上加 **`-p never`**，发布只交给 workflow 里的 `action-gh-release`。
+4. ⚠️ **本地的「干净自检」其实是老配置**：自检隔离目录里若没有 `settings.json`，`settings.js` 会从 `AppData\Roaming\LiquidGlassCounter\settings.json` **复制一份老配置**过来 —— 所以本地常年跑在「老配置」上，而 CI runner 上是**真·全新配置**。这次 CI 冲出来的三条失败有两条源于此：
+   - `T9` 依赖「闲置后自动放大」（老配置里开着；新默认 `expandIdleSec: 0` 是关的）→ 夹具改成**显式开启**并在结束时恢复；
+   - `T29 细条白字` 写死「RGB > 180」（老配置 `opacity.strip = 1` 能过；全新配置默认 **0.6**、白字合成后最亮只有 ~92）→ 改成**有效亮度**（把窗口透明度乘进去）并按**实测**取阈值 60。
+   - **本地复现 CI 的正确姿势**：`$env:SCI_USER_DATA=<某空目录>`，并且**在该目录里放一个内容为 `{}` 的 settings.json**（只给空目录是不够的 —— 那样又会去复制老配置）。
+   - CI 闸门里也把 `T29 细条白字` 归入「环境不可验证」（runner 无真实显示器/GPU 时截图可能全黑）；但它本身已被修得更稳。
+
+**本次结果**：`run 36250715534` push → success；Release <https://github.com/SenbonFanKageyoshi/smart-counter-island/releases/tag/v3.2.0>（Setup 71.3 MB / portable 71.1 MB）。
+
 **历史四次失败（别再走一遍）**：①怪测量口径 ②怪 DOM 结构（已证伪）③定位到「测量滞后」但对（方案 A 仍溢出）④护栏方向不对称（锁死 411）。真正的靶子是三者叠加：**测量滞后 + 改宽不推几何 + 兜底裁切判据过严**。
 
 ---
