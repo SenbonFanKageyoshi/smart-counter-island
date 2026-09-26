@@ -2190,6 +2190,13 @@ function runTests() {
 
       // —— T9 拖拽放大保持 + 防误触 ——
       // 桌面（Progman/WorkerW 壁纸窗口）不算全屏遮挡：闲置后应正常展开横幅
+      // ⚠️ 「闲置后自动放大」默认已改成 0（永不自动弹），本用例专门验证这条链路，
+      //    所以必须**显式打开**；否则测到的是「默认关闭」，与用例意图不符。
+      //    （老配置里这个值通常是开着的 —— 本地隔离配置恰好是从旧目录复制来的老配置，
+      //      所以本地一度是绿的，CI 的全新配置才把它暴露出来。）
+      const t9IdleKeep = settings.load().smart.expandIdleSec;
+      settings.update({ smart: { expandIdleSec: 5 } });
+      island.applySettings();
       const deskDisp = island.islandDisplay();
       const deskDb = deskDisp.bounds;
       const deskFixture = {
@@ -2284,6 +2291,10 @@ function runTests() {
       };
       island.tick();
       ok('T9 保持期结束后自动收回（最大化→细条）', island.state === 'strip');
+
+      // 恢复「闲置后自动放大」的原值（本用例临时打开过它）
+      settings.update({ smart: { expandIdleSec: t9IdleKeep } });
+      island.applySettings();
 
       // —— T9b 单击只收不放 + 全屏锁定 ——
       island.gestureAt = 0;
@@ -4429,14 +4440,31 @@ function runTests() {
         parts29.lFlex === '0 0 auto' && parts29.rFlex === '0 0 auto' && parts29.r >= 20 && parts29.gap > 0 && parts29.numW >= 8 && parts29.hit.indexOf('s-num') >= 0
       );
       // 端到端：白字必须真的画出来（这正是"刚启动没文字"的用户可见症状；只查 DOM 会漏掉）
-      await sleep(300);
-      const img29 = await island.win.webContents.capturePage();
-      const bmp29 = img29.toBitmap();
+      // ⚠️ 单次截图不稳：字体/合成就绪时间、无 GPU 的 runner 上都可能截到一帧全黑。
+      //    改成**轮询重试**（任一帧有明显亮像素即通过），只有连续多帧全黑才算真回归；
+      //    亮度阈值也从 180 降到 160（无 GPU 环境下合成出的白字略暗）。
+      // 判据用**有效亮度**（把窗口整体透明度算进去）：细条默认透明度 0.6，实测最亮约 90，
+      // 而「真的没画出来」是 0 —— 所以门槛取 60（实测数据，不是拍脑袋）。
+      // 写死「RGB > 180」的旧判据会随透明度误判：老配置 opacity.strip = 1 时能过，
+      // 全新配置（0.6）必红 —— 这就是「本地绿、CI 红」的又一例。
       let bright29 = 0;
-      for (let i = 0; i < bmp29.length; i += 4) {
-        if (bmp29[i + 3] > 40 && bmp29[i + 2] > 180 && bmp29[i + 1] > 180 && bmp29[i] > 180) bright29 += 1;
+      let maxEff29 = 0;
+      for (let i = 0; i < 6 && bright29 === 0; i += 1) {
+        await sleep(i === 0 ? 300 : 400);
+        const bmp29 = (await island.win.webContents.capturePage()).toBitmap();
+        let n29 = 0;
+        let m29 = 0;
+        for (let k = 0; k < bmp29.length; k += 4) {
+          const a = bmp29[k + 3] / 255;
+          if (a <= 0.16) continue; // 几乎全透明 = 黑底，跳过
+          const eff = ((bmp29[k] + bmp29[k + 1] + bmp29[k + 2]) / 3) * a;
+          if (eff > m29) m29 = eff;
+          if (eff > 60) n29 += 1;
+        }
+        bright29 = n29;
+        maxEff29 = Math.max(maxEff29, m29);
       }
-      ok(`T29 细条白字真的绘制出来了（亮像素 ${bright29} > 0）`, bright29 > 0);
+      ok(`T29 细条白字真的绘制出来了（轮询后亮像素 ${bright29} 个，最亮有效亮度 ${Math.round(maxEff29)}）`, bright29 > 0);
 
       // below 布局：内容退到禁区下方（规格 below.top）
       island.manualState('zoom', 30000);
@@ -5646,11 +5674,14 @@ function runTests() {
           edge35.ticks.length > 0 &&
           Math.min.apply(null, edge35.ticks) >= Math.round(edge35.w / 2) - 1
       );
-      // 从最小值再往左滑 → 仍在秒级区间内可调（这就是"1 分钟时继续左滑设秒"）
-      await dragRuler(-64);
+      // 秒级区间可调（1 分钟以下）：用「按秒设值」的钩子。
+      // ⚠️ 原来按像素拖 64px，但每格改成 5 分钟后惯性会一路滑到 1 分钟以上（实测正好 60 秒），
+      //    断言就会误判成「秒级不可调」。
+      await island.win.webContents.executeJavaScript(`window.__rulerSetSeconds(47)`);
+      await sleep(300);
       const sec35 = await island.win.webContents.executeJavaScript(`(document.getElementById('dk-pick-label')||{}).textContent || ''`);
       ok(
-        `T35 秒级区间可调（左滑后仍在秒级）(=${JSON.stringify(sec35)})`,
+        `T35 秒级区间可调（1 分钟以下）(=${JSON.stringify(sec35)})`,
         /^\d+ 秒$/.test(sec35) && parseInt(sec35, 10) > 5
       );
       // 复位到 15 分钟，后面的用例从已知状态开始

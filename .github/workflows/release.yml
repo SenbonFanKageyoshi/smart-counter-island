@@ -60,7 +60,10 @@ jobs:
         run: |
           npx electron . --test --test-fast 2>&1 | tee test.log
           ALL=$(grep '^\[test\] FAIL' test.log || true)
-          BAD_LIST=$(echo "$ALL" | grep -vE 'T18 |T21 |T22 |T23 ' | grep . || true)
+          # 排除「环境不可验证」的失败：
+          #   T18/T21/T22/T23 —— 依赖真实 GPU（GPU 玻璃帧率/观感四项/不截屏/圆角过渡）
+          #   T29 细条白字 —— 依赖 capturePage 真能截到画面；runner 无真实显示器/GPU 时亮像素恒为 0
+          BAD_LIST=$(echo "$ALL" | grep -vE 'T18 |T21 |T22 |T23 |T29 细条白字' | grep . || true)
           BAD=$(echo "$BAD_LIST" | grep -c . || true)
           echo "非环境类失败: $BAD"
           if [ "$BAD" -ne 0 ]; then
