@@ -477,6 +477,7 @@ async function runDiagPress() {
   app.exit(0);
 }
 
+
 // ---------------- 玻璃实验室（--glass-lab 打开窗口 / --shot-lab 截图后退出） ----------------
 async function runGlassLab() {
   const lab = require('./glass-lab');
@@ -1308,7 +1309,7 @@ async function runShots() {
   fs.mkdirSync(outDir, { recursive: true });
   island.setPaused(true); // 冻结状态机，避免 tick 抢占状态
   await new Promise((r) => setTimeout(r, 1500)); // 等渲染器就绪
-  for (const st of ['strip', 'expanded', 'zoom', 'dock', 'progress']) {
+  for (const st of ['strip', 'expanded', 'zoom', 'dock']) {
     island.setState(st);
     await new Promise((r) => setTimeout(r, 300));
     console.log('[shot:mid]', st, 'state=' + island.state, 'bounds=' + JSON.stringify(island.win.getBounds()));
@@ -1590,7 +1591,7 @@ function registerIpc() {
 
   // 细条/横幅宽度自适应：渲染器按左右两瓣的真实文字宽度测量后上报
   ipcMain.on('island:strip-size', (_e, size) => {
-    if (size) island.setStripSize(size.l, size.r);
+    if (size) island.setStripSize(size.l, size.r, size.gap, size.guarded);
   });
 
   // 倒计时窗口宽度自适应：渲染器按文字内容测量后上报
@@ -1778,6 +1779,11 @@ function registerIpc() {
     if (island && island.onAction) island.onAction({ type: 'longPress' });
     return true;
   });
+  // 按盖板时让灵动岛本体同步显示「按下」反馈（视线通常在岛上，盖板那块 87×26 太小看不出来）
+  ipcMain.handle('cover:press', (_e, on) => {
+    if (island && island.setPressFeedback) island.setPressFeedback(!!on);
+    return true;
+  });
   // 盖板上的 ✓ / ✗（创建页的确认 / 放弃）→ 转发为与计时坞里相同的动作
   ipcMain.handle('cover:action', (_e, a) => {
     if (island && island.onAction && a && typeof a.type === 'string') island.onAction(a);
@@ -1954,20 +1960,20 @@ function runTests() {
       const base = {
         idleMs: 0, occluded: false, maximized: false, overPill: false,
         mode: 'auto', smart: true, hideOnMaximized: true,
-        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
-        state: 'strip', expandedSinceMs: 0, // 横幅模式已去掉：闲置直接进大窗口
+        expandIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        state: 'strip', // 横幅模式已去掉：闲置直接进大窗口
       };
       ok('T2 有操作→灵动岛', island.decideState(base) === 'strip');
-      ok('T2 闲置5s→维持灵动岛（zoomIdleSec=0 不自动放大）', island.decideState({ ...base, idleMs: 5000 }) === 'strip');
-      ok('T2 显式开了自动放大（zoomIdleSec=5）闲置5s→大窗口', island.decideState({ ...base, zoomIdleSec: 5, idleMs: 5000 }) === 'zoom');
+      ok('T2 闲置5s→维持灵动岛（默认 expandIdleSec=0 不自动放大）', island.decideState({ ...base, idleMs: 5000 }) === 'strip');
+      ok('T2 显式开了自动放大（expandIdleSec=5）闲置5s→大窗口', island.decideState({ ...base, expandIdleSec: 5, idleMs: 5000 }) === 'zoom');
       ok('T2 闲置不足 expandIdleSec→维持灵动岛', island.decideState({ ...base, idleMs: 3000 }) === 'strip');
-      ok('T2 两个闲置门槛取较大值（zoomIdleSec=15 时闲置 5s 不放大）', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 5000 }) === 'strip');
-      ok('T2 闲置 15s（达两个门槛）→大窗口', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 15000 }) === 'zoom');
-      ok('T2 已在大屏且继续闲置→保持大屏', island.decideState({ ...base, zoomIdleSec: 15, state: 'zoom', idleMs: 99999 }) === 'zoom');
+      ok('T2 闲置不足设定秒数（expandIdleSec=15 时闲置 5s 不放大）', island.decideState({ ...base, expandIdleSec: 15, idleMs: 5000 }) === 'strip');
+      ok('T2 闲置 15s（达设定秒数）→大窗口', island.decideState({ ...base, expandIdleSec: 15, idleMs: 15000 }) === 'zoom');
+      ok('T2 已在大屏且继续闲置→保持大屏', island.decideState({ ...base, expandIdleSec: 15, state: 'zoom', idleMs: 99999 }) === 'zoom');
       ok('T2 大屏有操作→收回细条', island.decideState({ ...base, state: 'zoom', idleMs: 100 }) === 'strip');
-      ok('T2 关闭大屏→闲置不放大（维持灵动岛）', island.decideState({ ...base, zoomIdleSec: 15, zoomAllowed: false, idleMs: 99999 }) === 'strip');
-      ok('T2 全屏+闲置15s→仍锁定灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, occluded: true }) === 'strip');
-      ok('T2 最大化+闲置15s→保持灵动岛', island.decideState({ ...base, zoomIdleSec: 15, idleMs: 99999, maximized: true }) === 'strip');
+      ok('T2 关闭大屏→闲置不放大（维持灵动岛）', island.decideState({ ...base, expandIdleSec: 15, zoomAllowed: false, idleMs: 99999 }) === 'strip');
+      ok('T2 全屏+闲置15s→仍锁定灵动岛', island.decideState({ ...base, expandIdleSec: 15, idleMs: 99999, occluded: true }) === 'strip');
+      ok('T2 最大化+闲置15s→保持灵动岛', island.decideState({ ...base, expandIdleSec: 15, idleMs: 99999, maximized: true }) === 'strip');
       ok('T2 无计时时间→锁定灵动岛', island.decideState({ ...base, hasCountdown: false, idleMs: 99999 }) === 'strip');
       ok('T2 无计时时间+悬停→仍锁定', island.decideState({ ...base, hasCountdown: false, overPill: true }) === 'strip');
       ok('T2 全屏遮挡→灵动岛（无条件）', island.decideState({ ...base, occluded: true }) === 'strip');
@@ -1978,7 +1984,7 @@ function runTests() {
       ok('T2 全屏+隐藏模式→不唤起', island.decideState({ ...base, mode: 'hidden', occluded: true, overPill: true }) === 'strip');
       ok('T2 光标悬停→保持现状', island.decideState({ ...base, overPill: true }) === null);
       ok('T2 大屏悬停→不阻止收起（有操作回灵动岛）', island.decideState({ ...base, state: 'zoom', overPill: true, idleMs: 100 }) === 'strip');
-      ok('T2 操作后冷却期内不自动弹大屏（维持灵动岛）', island.decideState({ ...base, zoomIdleSec: 15, zoomCooldown: true, idleMs: 99999 }) === 'strip');
+      ok('T2 操作后冷却期内不自动弹大屏（维持灵动岛）', island.decideState({ ...base, expandIdleSec: 15, zoomCooldown: true, idleMs: 99999 }) === 'strip');
       ok('T2 手动保持期→保持现状', island.decideState({ ...base, holding: true, idleMs: 99999 }) === null);
       ok('T2 关闭智能→保持现状', island.decideState({ ...base, smart: false, idleMs: 99999 }) === null);
       ok('T2 窗口最大化→保持灵动岛', island.decideState({ ...base, maximized: true, idleMs: 99999 }) === 'strip');
@@ -2193,7 +2199,7 @@ function runTests() {
         pid: 1234, li: 1, tick: 1000000000,
         cx: deskDb.x + deskDb.width - 300, cy: deskDb.y + deskDb.height - 300,
       };
-      /** 装好夹具（桌面前台 + 横幅已展开 30 秒）后推进一次状态机 */
+      /** 装好夹具（桌面前台）后推进一次状态机 */
       const t9Setup = () => {
         island.lastAutoSwitch = 0;
         island.animating = false;
@@ -2203,7 +2209,6 @@ function runTests() {
         island.lastOverPill = false;
         island.probe.last = { ...deskFixture };
         island.state = 'expanded';
-        island.expandedAt = Date.now() - 30000; // 横幅已展开 30 秒（> zoomIdleSec）
         island.tick();
       };
       t9Setup();
@@ -2221,7 +2226,7 @@ function runTests() {
       const t9dbg =
         `idle=${t9pl.tick - t9pl.li} li=${t9pl.li} lastLi=${island.lastLi} mode=${t9st.manual.mode} ` +
         `smart=${t9st.smart.enabled} glass=${t9st.ui.glassMode} zoomAllowed=${island.zoomAllowed()} ` +
-        `cd=${island.hasCountdown()} cooldownMs=${island.zoomCooldownUntil - Date.now()} zoomIdleSec=${t9st.smart.zoomIdleSec} ` +
+        `cd=${island.hasCountdown()} cooldownMs=${island.zoomCooldownUntil - Date.now()} expandIdleSec=${t9st.smart.expandIdleSec} ` +
         `anim=${island.animating} paused=${island.paused} drag=${island.dragging} holdMs=${island.holdUntil - Date.now()} ` +
         `lastOverPill=${island.lastOverPill}`;
       ok(`T9 桌面前台→不锁定（横幅展开后自动弹大屏，state=${island.state}｜${t9dbg}）`, t9ok);
@@ -2674,8 +2679,8 @@ function runTests() {
       });
       island.broadcastEvents();
       // 轮播标题：开启轮播（2s），进大屏，标题应随事件切换
-      const t13ZoomIdle = settings.load().smart.zoomIdleSec;
-      settings.update({ smart: { cycleEnabled: true, cycleSec: 2, zoomIdleSec: 0 } });
+      const t13ZoomIdle = settings.load().smart.expandIdleSec;
+      settings.update({ smart: { cycleEnabled: true, cycleSec: 2, expandIdleSec: 0 } });
       island.broadcastEvents();
       island.manualState('zoom', 8000);
       island.animating = false;
@@ -2690,7 +2695,7 @@ function runTests() {
       }
       const headList = [...heads].join(' | ');
       ok(`T13 大窗口轮播切换标题 (看到 ${heads.size} 个: ${headList})`, heads.size >= 2);
-      settings.update({ smart: { cycleEnabled: false, zoomIdleSec: t13ZoomIdle } });
+      settings.update({ smart: { cycleEnabled: false, expandIdleSec: t13ZoomIdle } });
       island.broadcastEvents();
       island.manualState('strip', 0);
       island.animating = false;
@@ -3594,40 +3599,59 @@ function runTests() {
       settings.update({ schedule: { enabled: false, weeks: [mkWeek25()], notify: undefined } });
       await sleep(300);
 
-      // —— T24 全屏授课的三种行为（隐藏 / 右上角角落卡片 / 顶部进度条）——
+      // —— T24 全屏授课的两种行为（彻底隐藏 / 保持灵动岛）——
+      // 「顶部进度条」「右上角卡片」两个展示形态已按用户要求删除；旧配置由版本链（to:2）落到 'strip'。
       const fsBase = {
         idleMs: 99999, occluded: true, maximized: false, overPill: true, state: 'strip', mode: 'auto', smart: true,
-        hideOnMaximized: true, expandIdleSec: 4, zoomIdleSec: 15, zoomAllowed: true, zoomCooldown: false,
-        holding: false, hasCountdown: true, expandedSinceMs: 0,
+        hideOnMaximized: true, expandIdleSec: 15, zoomAllowed: true, zoomCooldown: false,
+        holding: false, hasCountdown: true,
       };
       ok(
-        `T24 全屏授课形态决策 (灵动岛→${island.decideState({ ...fsBase, fullscreenState: 'strip' })}，进度条→${island.decideState({ ...fsBase, fullscreenState: 'progress' })}，角落卡片（内部状态·用户入口已移除）→${island.decideState({ ...fsBase, fullscreenState: 'corner' })}，无事件→${island.decideState({ ...fsBase, fullscreenState: 'progress', hasCountdown: false })})`,
-        island.decideState({ ...fsBase, fullscreenState: 'strip' }) === 'strip' &&
-          island.decideState({ ...fsBase, fullscreenState: 'progress' }) === 'progress' &&
-          island.decideState({ ...fsBase, fullscreenState: 'corner' }) === 'corner' &&
-          island.decideState({ ...fsBase, fullscreenState: 'progress', hasCountdown: false }) === 'strip'
+        `T24 全屏授课形态决策 (有事件→${island.decideState(fsBase)}，无事件→${island.decideState({ ...fsBase, hasCountdown: false })}；fullscreenState 传什么都只认灵动岛)`,
+        island.decideState(fsBase) === 'strip' &&
+          island.decideState({ ...fsBase, hasCountdown: false }) === 'strip' &&
+          island.decideState({ ...fsBase, fullscreenState: 'strip' }) === 'strip' &&
+          island.decideState({ ...fsBase, fullscreenState: 'hide' }) === 'strip'
       );
       // 旧配置迁移：hideOnFullscreen(布尔) → fullscreenMode(枚举)（纯函数，直接构造磁盘对象断言）
       const migA = {};
       const migB = {};
-      const migC = { fullscreenMode: 'corner' };
+      const migC = { fullscreenMode: 'strip' };
       const okA = settings.migrateFullscreenMode({ hideOnFullscreen: false }, migA);
       const okB = settings.migrateFullscreenMode({ hideOnFullscreen: true }, migB);
-      const okC = settings.migrateFullscreenMode({ hideOnFullscreen: false, fullscreenMode: 'corner' }, migC);
+      const okC = settings.migrateFullscreenMode({ hideOnFullscreen: false, fullscreenMode: 'strip' }, migC);
       ok(
         `T24 旧设置迁移 (false→${migA.fullscreenMode}/${okA}，true→${migB.fullscreenMode}/${okB}，已有新键不覆盖=${migC.fullscreenMode}/${okC})`,
-        okA === true && migA.fullscreenMode === 'strip' && okB === true && migB.fullscreenMode === 'hide' && okC === false && migC.fullscreenMode === 'corner'
+        okA === true && migA.fullscreenMode === 'strip' && okB === true && migB.fullscreenMode === 'hide' && okC === false && migC.fullscreenMode === 'strip'
+      );
+      // 版本链 to:2：两个已删除形态的旧配置必须落到 'strip'（进度条参数与它们的透明度键一并清掉）
+      // 纯函数直接构造对象断言 —— 不碰真实配置。
+      const disk2a = { schemaVersion: 1 };
+      const mig2a = { smart: { fullscreenMode: 'progress', progressTotalDays: 100 }, ui: { opacity: { strip: 0.6, corner: 0.9, progress: 0.55 } } };
+      settings.applyMigrations(disk2a, mig2a);
+      const mig2b = { smart: { fullscreenMode: 'corner' } };
+      settings.applyMigrations({ schemaVersion: 1 }, mig2b);
+      const mig2c = { smart: { fullscreenMode: 'hide' } };
+      settings.applyMigrations({ schemaVersion: 1 }, mig2c);
+      ok(
+        `T24 版本链 to:2：旧形态落到保持灵动岛 (progress→${mig2a.smart.fullscreenMode}，清理=${mig2a.smart.progressTotalDays === undefined && mig2a.ui.opacity.corner === undefined && mig2a.ui.opacity.progress === undefined}，corner→${mig2b.smart.fullscreenMode}，hide 不动=${mig2c.smart.fullscreenMode}，schemaVersion=${mig2a.schemaVersion})`,
+        mig2a.smart.fullscreenMode === 'strip' &&
+          mig2a.smart.progressTotalDays === undefined &&
+          mig2a.ui.opacity.corner === undefined &&
+          mig2a.ui.opacity.progress === undefined &&
+          mig2a.schemaVersion === settings.SCHEMA_VERSION && // 实时读：别再写死版本号
+          mig2b.smart.fullscreenMode === 'strip' &&
+          mig2c.smart.fullscreenMode === 'hide'
       );
 
-      // 真实切到「右上角角落卡片」：窗口贴住工作区右上角、鼠标穿透、DOM 是角落布局
-      settings.update({ smart: { fullscreenMode: 'corner' }, ui: { opacity: { corner: 0.8 } } });
+      // 真实全屏（保持灵动岛档）：锁成小条 + 鼠标穿透，且两个已删形态的 DOM 不再存在
+      settings.update({ smart: { fullscreenMode: 'strip' } });
       island.applySettings();
       island.manualState('strip', 0);
       island.animating = false;
       await sleep(400);
       const d24 = island.islandDisplay();
       const db24 = d24.bounds;
-      const wa24 = d24.workArea;
       island.probe.last = {
         ...island.probe.last,
         fgClass: 'Sci_Fullscreen', vis: true, pid: 4242, li: 999999900, tick: 1000000000, cx: 5, cy: 5, toasts: null,
@@ -3639,96 +3663,28 @@ function runTests() {
       island.probe.frozen = true; // 注入的全屏授课画面不被真实采样覆盖
       island.tick();
       await sleep(1400);
-      const bCorner = island.win.getBounds();
-      const domCorner = await island.win.webContents.executeJavaScript(
-        `({ state: document.body.dataset.state, hasCz: !!document.querySelector('.cz-num'), opacity: document.getElementById('pill').style.opacity })`
+      const domFull24 = await island.win.webContents.executeJavaScript(
+        `({ state: document.body.dataset.state, hasCz: !!document.querySelector('.cz-num'), hasPb: !!document.querySelector('.pb-fill') })`
       );
       ok(
-        `T24 角落卡片贴右上角 + 鼠标穿透 (状态=${island.state} 卡片右边缘=${bCorner.x + bCorner.width} 工作区右=${wa24.x + wa24.width} 上边缘=${bCorner.y}/${wa24.y} 角落布局=${domCorner.hasCz} 透明度=${domCorner.opacity})`,
-        island.state === 'corner' &&
-          bCorner.x + bCorner.width === wa24.x + wa24.width &&
-          bCorner.y === wa24.y &&
-          domCorner.state === 'corner' &&
-          domCorner.hasCz === true &&
-          domCorner.opacity === '0.8' &&
-          island.mousePT === true
+        `T24 全屏（保持灵动岛档）锁成小条 + 鼠标穿透，两个已删形态的 DOM 不存在 (状态=${island.state} 穿透=${island.mousePT} 角落DOM=${domFull24.hasCz} 进度条DOM=${domFull24.hasPb})`,
+        island.state === 'strip' && island.mousePT === true && domFull24.hasCz === false && domFull24.hasPb === false
       );
-      // 形状逐像素验证：抓一帧窗口位图（左上/右下内凹=透明，右上=屏幕角不透明，左下外凸=透明）
-      const shot24 = await island.win.webContents.capturePage();
-      const bmp24 = shot24.getBitmap();
-      const sz24 = shot24.getSize();
-      const alpha24 = (x, y) => bmp24[(y * sz24.width + x) * 4 + 3];
-      const i24 = 2;
-      const shape24 = {
-        TL: alpha24(i24, i24),
-        TR: alpha24(sz24.width - 1 - i24, i24),
-        BR: alpha24(sz24.width - 1 - i24, sz24.height - 1 - i24),
-        BL: alpha24(i24, sz24.height - 1 - i24),
-        midL: alpha24(i24, Math.floor(sz24.height / 2)),
-        midT: alpha24(Math.floor(sz24.width / 2), i24),
-        midB: alpha24(Math.floor(sz24.width / 2), sz24.height - 1 - i24),
-        midR: alpha24(sz24.width - 1 - i24, Math.floor(sz24.height / 2)),
-      };
-      const clip24 = await island.win.webContents.executeJavaScript(
-        `(() => {
-           const pills = document.getElementById('pill');
-           const w = pills.clientWidth, h = pills.clientHeight;
-           const inPill = (x, y) => { const el = document.elementFromPoint(x, y); return !!(el && pills.contains(el)); };
-           return {
-             shape: pills.dataset.cornerShape || '',
-             clip: (getComputedStyle(pills).clipPath || '').slice(0, 20),
-             name: !!document.querySelector('.cz-name'),
-             num: (document.querySelector('.cz-num') || {}).textContent || '',
-             hitTL: inPill(2, 2), hitTR: inPill(w - 3, 2), hitBR: inPill(w - 3, h - 3), hitBL: inPill(2, h - 3),
-             hitT: inPill(Math.round(w / 2), 2), hitR: inPill(w - 3, Math.round(h / 2)), hitB: inPill(Math.round(w / 2), h - 3), hitL: inPill(2, Math.round(h / 2)),
-           };
-         })()`
-      );
-      // 注：截取透明窗口时 bitmap 的 alpha 整体偏暗（受窗口透明度与 DWM 合成影响），
-      // 所以只用「0 / 非 0」判断该点是否属于卡片
-      ok(
-        `T24 角落卡片外形（左上/右下为内凹圆角）：像素 左上=${shape24.TL} 右上=${shape24.TR} 右下=${shape24.BR} 左下=${shape24.BL} 四边中点=${shape24.midT}/${shape24.midR}/${shape24.midB}/${shape24.midL}；命中测试 左上=${clip24.hitTL} 右上=${clip24.hitTR} 右下=${clip24.hitBR} 左下=${clip24.hitBL} 四边=${clip24.hitT}/${clip24.hitR}/${clip24.hitB}/${clip24.hitL}；尺寸=${clip24.shape} clip=${clip24.clip} 仅剩余时间=${!clip24.name} 数值=${JSON.stringify(clip24.num)}`,
-        shape24.TL === 0 &&
-          shape24.BR === 0 &&
-          shape24.BL === 0 &&
-          shape24.TR >= 8 &&
-          shape24.midT >= 8 &&
-          shape24.midR >= 8 &&
-          shape24.midB >= 8 &&
-          shape24.midL >= 8 &&
-          clip24.hitTL === false &&
-          clip24.hitTR === true &&
-          clip24.hitBR === false &&
-          clip24.hitBL === false &&
-          clip24.hitT === true &&
-          clip24.hitR === true &&
-          clip24.hitB === true &&
-          clip24.hitL === true &&
-          /^w\d+ h\d+ r\d+$/.test(clip24.shape) &&
-          clip24.clip.indexOf('path(') === 0 &&
-          clip24.name === false
-      );
-      // 切到「顶部进度条」：整宽贴顶，透明度按设置生效
-      settings.update({ smart: { fullscreenMode: 'progress', progressTotalDays: 100 }, ui: { opacity: { progress: 0.4 } } });
+      // 「彻底隐藏」档：全屏时窗口真的隐藏（改两档后这档必须也被覆盖）
+      settings.update({ smart: { fullscreenMode: 'hide' } });
       island.applySettings();
-      island.lastAutoSwitch = 0;
-      island.animating = false;
-      island.tick();
-      await sleep(1400);
-      const bBar = island.win.getBounds();
-      const domBar = await island.win.webContents.executeJavaScript(
-        `(() => { const f = document.querySelector('.pb-fill'); const p = document.getElementById('pill'); return { state: document.body.dataset.state, fill: f ? f.style.width : '', opacity: p.style.opacity, label: (document.querySelector('.pb-name') || {}).textContent || '' }; })()`
-      );
+      // 轮询等它真的隐藏：tick() 在 animating/paused 时会直接早退，单次 tick 会假失败
+      for (let i = 0; i < 10 && island.autoHidden !== true; i += 1) {
+        island.animating = false;
+        island.lastAutoSwitch = 0;
+        island.tick();
+        await sleep(300);
+      }
       ok(
-        `T24 顶部进度条整宽贴顶 + 透明度可调 (状态=${island.state} 宽=${bBar.width}/${wa24.width} 顶=${bBar.y}/${wa24.y} 填充=${domBar.fill} 透明度=${domBar.opacity} 文本=${JSON.stringify(domBar.label)})`,
-        island.state === 'progress' &&
-          bBar.width === wa24.width &&
-          bBar.y === wa24.y &&
-          domBar.state === 'progress' &&
-          /%$/.test(domBar.fill) &&
-          domBar.opacity === '0.4'
+        `T24 全屏（彻底隐藏档）窗口隐藏 (状态=${island.state} 隐藏=${island.autoHidden} 可见=${island.win.isVisible()})`,
+        island.autoHidden === true && island.win.isVisible() === false
       );
-      // 退出全屏：回到普通形态并取消穿透
+      // 退出全屏：回到普通形态、取消穿透、解除隐藏
       island.probe.frozen = false; // 解冻：退出全屏由采样驱动
       island.probe.last = {
         ...island.probe.last,
@@ -3739,10 +3695,10 @@ function runTests() {
       island.tick();
       await sleep(900);
       ok(
-        `T24 退出全屏回到普通形态 (状态=${island.state} 穿透=${island.mousePT})`,
-        island.state !== 'corner' && island.state !== 'progress' && island.mousePT === false
+        `T24 退出全屏回到普通形态 (状态=${island.state} 穿透=${island.mousePT} 隐藏=${island.autoHidden})`,
+        island.state === 'strip' && island.mousePT === false && island.autoHidden === false
       );
-      settings.update({ smart: { fullscreenMode: 'hide', progressTotalDays: 365 }, ui: { opacity: { corner: 0.9, progress: 0.55 } } });
+      settings.update({ smart: { fullscreenMode: 'hide' } });
       island.applySettings();
       island.manualState('strip', 0);
       island.animating = false;
@@ -3804,8 +3760,8 @@ function runTests() {
       // —— T19 托盘「大窗口驻留显示」——
       const baseZoom = {
         idleMs: 0, occluded: false, maximized: false, overPill: true, mode: 'zoom', smart: true, hideOnMaximized: true,
-        expandIdleSec: 4, zoomIdleSec: 15, zoomAllowed: true, zoomCooldown: true, holding: false, hasCountdown: true,
-        state: 'zoom', expandedSinceMs: 0,
+        expandIdleSec: 15, zoomAllowed: true, zoomCooldown: true, holding: false, hasCountdown: true,
+        state: 'zoom',
       };
       ok(
         `T19 大窗口驻留：有操作/悬停/冷却期都不收回 (idle=0→${island.decideState(baseZoom)}, 悬停→${island.decideState({ ...baseZoom, overPill: true })}, 冷却→${island.decideState({ ...baseZoom, zoomCooldown: true })})`,
@@ -4145,7 +4101,8 @@ function runTests() {
       ok(
         `T29 布局自动选择 (细条→${sensorsMod.pickLayout('auto', 'strip', 26, top29)}，横幅→${sensorsMod.pickLayout('auto', 'expanded', 64, top29)}，大卡片→${sensorsMod.pickLayout('auto', 'zoom', 274, top29)}，手动 split→${sensorsMod.pickLayout('split', 'expanded', 64, top29)})`,
         sensorsMod.pickLayout('auto', 'strip', 26, top29) === 'split' &&
-          sensorsMod.pickLayout('auto', 'progress', 16, top29) === 'split' &&
+          // 进度条形态已删除：'progress' 不再是特例，按薄高度会自然落到下方布局
+          sensorsMod.pickLayout('auto', 'progress', 16, top29) === 'below' &&
           sensorsMod.pickLayout('auto', 'expanded', 64, top29) === 'below' &&
           sensorsMod.pickLayout('auto', 'zoom', 274, top29) === 'below' &&
           sensorsMod.pickLayout('split', 'expanded', 64, top29) === 'split'
@@ -4161,11 +4118,12 @@ function runTests() {
       const strip29 = island.pillSize('strip', d29);
       const exp29 = island.pillSize('expanded', d29);
       const tgt29 = island.computeBounds('strip', d29);
+      const fit29 = island.stripFit();
       const center29 = d29.workArea.x + (d29.workArea.width - tgt29.width) / 2;
       ok(
-        `T29 细条左右分栏、横幅长到下方 (细条 116→${strip29.w}×${strip29.h} = 116+禁区${zw29}+槽位${slots29}，横幅 ${exp29.w}×${exp29.h} = 禁区深${depth29}+空隙+64，黑底顶=${spec29.blackTop})`,
+        `T29 细条左右分栏、横幅长到下方 (细条额度 ${fit29.E}(左${fit29.l}+右${fit29.r}+间距${fit29.gap}×2)+禁区${zw29}+槽位${slots29}→${strip29.w}×${strip29.h}，横幅 ${exp29.w}×${exp29.h} = 禁区深${depth29}+空隙+64，黑底顶=${spec29.blackTop})`,
         spec29.on === true &&
-          strip29.w === 116 + zw29 + slots29 &&
+          strip29.w === fit29.E + zw29 + slots29 &&
           strip29.h >= depth29 &&
           exp29.w === 420 &&
           exp29.h === depth29 + spec29.slotBelow + 64 &&
@@ -4196,10 +4154,18 @@ function runTests() {
       cap29 = null;
       island.applyRegion();
       probe.setRegion = origSetRegion29;
-      const b29 = island.win.getBounds();
+      // 细条宽度现在自适应（随内容）：期望值必须用**实时**几何，不能用早期快照 strip29.w；
+      // 并轮询等「窗口宽 = 实时 pillSize + 16」成立，消除「采纳恰好发生在两次读数之间」的竞态。
+      let b29 = island.win.getBounds();
+      let liveW29 = island.pillSize('strip', island.islandDisplay()).w;
+      for (let i = 0; i < 6 && Math.abs(b29.width - (liveW29 + 16)) > 1; i += 1) {
+        await sleep(400);
+        liveW29 = island.pillSize('strip', island.islandDisplay()).w;
+        b29 = island.win.getBounds();
+      }
       ok(
-        `T29 命中区域=圆角矩形（不挖洞） (参数=${cap29 ? cap29.length : 0} 个：${JSON.stringify(cap29 && cap29.slice(1))} 窗口=${b29.width}×${b29.height} 期望=${strip29.w + 16})`,
-        !!cap29 && cap29.length === 6 && cap29[3] === Math.round((strip29.w + 6) * scale29) && Math.abs(b29.width - (strip29.w + 16)) <= 1
+        `T29 命中区域=圆角矩形（不挖洞） (参数=${cap29 ? cap29.length : 0} 个：${JSON.stringify(cap29 && cap29.slice(1))} 窗口=${b29.width}×${b29.height} 期望=${liveW29 + 16})`,
+        !!cap29 && cap29.length === 6 && cap29[3] === Math.round((liveW29 + 6) * scale29) && Math.abs(b29.width - (liveW29 + 16)) <= 1
       );
 
       // 渲染层：内容绕开禁区（那块黑由独立的传感器盖板窗口负责）
@@ -4256,6 +4222,62 @@ function runTests() {
           covCap29.bg === 'rgb(0, 0, 0)' &&
           covCap29.w === covExp29.w
       );
+      // —— 细条宽度自适应（2026-09-26）：额度 = 两瓣 + 2×行内间距，窗口宽 = 额度 + 禁区 + 槽位 ——
+      // 不变量：两侧不留等宽空白、兜底裁切不介入、连续采样收敛。内容先固定成已知的一组，
+      // 避免依赖前面用例留下的数据（细条上事件名超过 4.2em 会被 CSS 截断成省略号，那是既有规则）。
+      settings.update({ events: [{ id: 'fit29', name: '期末考试', date: settings.fmtDate(new Date(Date.now() + 100 * 86400000)), emoji: '📘', enabled: true, pinned: true }] });
+      island.broadcastEvents();
+      await sleep(1600);
+      const readFit29 = () => island.win.webContents.executeJavaScript(`(() => {
+        const px = (el) => (el ? el.getBoundingClientRect() : null);
+        const pr = px(document.getElementById('pill'));
+        const l = document.querySelector('.nb-l');
+        const r = document.querySelector('.nb-r');
+        const g = document.querySelector('.nb-gap');
+        const row = document.querySelector('.s-row');
+        const lb = px(l), rb = px(r), gb = px(g);
+        const cs = row ? getComputedStyle(row) : null;
+        return {
+          state: document.body.dataset.state,
+          layout: document.body.dataset.notchLayout || '',
+          W: pr ? Math.round(pr.width) : -1,
+          l: lb ? Math.round(lb.width) : -1,
+          r: rb ? Math.round(rb.width) : -1,
+          g: gb ? Math.round(gb.width) : -1,
+          gap: cs ? Math.round(parseFloat(cs.columnGap || cs.gap) || 0) : 0,
+          leftBlank: lb && pr ? Math.round(lb.left - pr.left) : -1,
+          rightBlank: rb && pr ? Math.round(pr.right - rb.right) : -1,
+          guardL: l ? (l.style.maxWidth || '') : '',
+          guardR: r ? (r.style.maxWidth || '') : '',
+        };
+      })()`);
+      let fit29a = null;
+      for (let i = 0; i < 8; i += 1) {
+        const s = await readFit29();
+        const stable = fit29a && s.W === fit29a.W;
+        fit29a = s;
+        if (stable) break;
+        await sleep(600);
+      }
+      const fitSum29 = fit29a.l + fit29a.r + fit29a.g + 2 * fit29a.gap;
+      const fitPad29 = island.stripFit().pad; // 两侧留白（实时读，别写死）
+      ok(
+        `T29 细条宽度自适应：窗口宽 = 两瓣+2×间距+空隙+2×留白 (W=${fit29a.W} 左${fit29a.l}+右${fit29a.r}+间距${fit29a.gap}×2+空隙${fit29a.g}=${fitSum29}，两侧留白 ${fitPad29}×2，实测空白 ${fit29a.leftBlank}/${fit29a.rightBlank}，兜底裁切=${JSON.stringify(fit29a.guardL + '/' + fit29a.guardR)})`,
+        fit29a.state === 'strip' && fit29a.layout === 'split' &&
+          fitSum29 > 0 && fitPad29 > 0 &&
+          Math.abs(fit29a.W - (fitSum29 + 2 * fitPad29)) <= 2 &&
+          Math.abs(fit29a.leftBlank - fitPad29) <= 2 && Math.abs(fit29a.rightBlank - fitPad29) <= 2 &&
+          !fit29a.guardL && !fit29a.guardR
+      );
+      const fitW29 = [];
+      for (let i = 0; i < 3; i += 1) {
+        fitW29.push((await readFit29()).W);
+        await sleep(600);
+      }
+      ok(
+        `T29 细条自适应已收敛（连续 3 次窗口宽一致，无振荡） (${fitW29.join('/')})`,
+        Math.max.apply(null, fitW29) - Math.min.apply(null, fitW29) <= 1
+      );
       // 盖板钉死在原地：小岛切换形态、隐藏、动来动去都不影响它
       const covBefore29 = cov29 ? cov29.getBounds() : null;
       island.manualState('expanded', 30000);
@@ -4272,6 +4294,21 @@ function runTests() {
       ok(
         `T29 盖板位置/大小永不移动 (切换形态+隐藏前 ${JSON.stringify(covBefore29)} → 后 ${JSON.stringify(covAfter29)}，小岛隐藏时仍可见=${cov29 ? cov29.isVisible() : false})`,
         !!covBefore29 && !!covAfter29 && JSON.stringify(covBefore29) === JSON.stringify(covAfter29)
+      );
+      // 盖板按下 → 灵动岛本体同步显示同一个按下反馈（只放大、不发光）。
+      // 走的是 cover:press → island.setPressFeedback → 'island:press' → 渲染层 pressFeedback() 这条通路。
+      island.manualState('strip', 0);
+      await sleep(400);
+      island.setPressFeedback(true);
+      await sleep(220);
+      const pressOn29 = await island.win.webContents.executeJavaScript(`document.body.classList.contains('pressing')`);
+      const pillScale29 = await island.win.webContents.executeJavaScript(`getComputedStyle(document.getElementById('pill')).transform`);
+      island.setPressFeedback(false);
+      await sleep(220);
+      const pressOff29 = await island.win.webContents.executeJavaScript(`document.body.classList.contains('pressing')`);
+      ok(
+        `T29 盖板按下 → 灵动岛同步按下反馈（只放大不发光） (开=${pressOn29} 关=${pressOff29} transform=${pillScale29})`,
+        pressOn29 === true && pressOff29 === false && /matrix\(1\.0[0-9]|matrix\(1\.1/.test(String(pillScale29)) && !/shadow|glow/i.test(String(pillScale29))
       );
       // 冷启动自愈：盖板被销毁（或从没被创建过）时，下一次 tick 必须按同一几何重建
       sensorCover.destroy();
@@ -4479,32 +4516,6 @@ function runTests() {
       );
       island.manualState('strip', 20000);
       await sleep(700);
-
-      island.manualState('progress', 20000);
-      const readPb29 = () =>
-        island.win.webContents.executeJavaScript(`(() => {
-          const el = document.querySelector('.pb-label');
-          if (!el) return null;
-          const cs = getComputedStyle(el);
-          return {
-            state: document.body.dataset.state,
-            pos: cs.position,
-            left: cs.left,
-            cx: document.documentElement.style.getPropertyValue('--notch-cx'),
-            half: document.documentElement.style.getPropertyValue('--notch-half'),
-          };
-        })()`);
-      let dom29c = await readPb29();
-      const pbDdl29 = Date.now() + 6000;
-      while ((!dom29c || dom29c.state !== 'progress' || dom29c.pos !== 'absolute') && Date.now() < pbDdl29) {
-        await sleep(150);
-        dom29c = await readPb29();
-      }
-      const leftExp29 = dom29c ? parseFloat(dom29c.cx) + parseFloat(dom29c.half) + 10 : NaN;
-      ok(
-        `T29 顶部进度条文字让到禁区右侧 (position=${dom29c && dom29c.pos} left=${dom29c && dom29c.left} 期望≈${leftExp29}px)`,
-        !!dom29c && dom29c.pos === 'absolute' && Math.abs(parseFloat(dom29c.left) - leftExp29) < 1.5
-      );
 
       settings.update({ ui: { cameraNotch: { enabled: false } } });
       island.manualState('strip', 20000);
@@ -4791,9 +4802,17 @@ function runTests() {
       const spec30 = island.notchSpec(); // 必须在这之后读：上面刚把挖孔打开，才有 zone
       dom30 = await readWx30();
       // 方案 A：天气只在盖板上 —— 细条不再预留天气槽（宽度里没有那 88），也不再画 chip
-      const expectStrip30 = spec30 && spec30.zone ? 116 + Math.round(spec30.zone.w) + spec30.slotLeft + spec30.slotRight : -1;
+      // 细条宽度自适应：期望 = 实时采纳的额度 + 禁区 + 槽位（写死 116 在自适应后失效）；
+      // 轮询等一次「窗口宽与实时额度自洽」，避开采纳与读数之间的竞态。
+      let expectStrip30 = -1;
+      for (let i = 0; i < 8; i += 1) {
+        expectStrip30 = spec30 && spec30.zone ? island.stripFit().E + Math.round(spec30.zone.w) + spec30.slotLeft + spec30.slotRight : -1;
+        if (dom30.width === expectStrip30) break;
+        await sleep(400);
+        dom30 = await readWx30();
+      }
       ok(
-        `T30 天气不上细条（宽 ${dom30.width} 期望 ${expectStrip30}，不含天气槽；chip=${dom30.has} 期望 false；细条宽度=116+禁区 ${spec30 && spec30.zone ? Math.round(spec30.zone.w) : '?'}+槽位）`,
+        `T30 天气不上细条（宽 ${dom30.width} 期望 ${expectStrip30}，不含天气槽；chip=${dom30.has} 期望 false；细条宽度=额度 ${island.stripFit().E}+禁区 ${spec30 && spec30.zone ? Math.round(spec30.zone.w) : '?'}+槽位）`,
         dom30.state === 'strip' && dom30.has === false && dom30.width === expectStrip30
       );
       // 还原：后面的用例按「无挖孔 + banner」跑
@@ -4824,9 +4843,12 @@ function runTests() {
       const coverWx30 = coverWin30 && !coverWin30.isDestroyed()
         ? await coverWin30.webContents.executeJavaScript(`(() => { const w = document.getElementById('wx'); const t = document.getElementById('wx-temp'); return { on: w ? w.classList.contains('on') : null, temp: t ? t.textContent : '', anim: document.documentElement.dataset.anim || '' }; })()`)
         : null;
+      // 细条宽度自适应：期望用实时额度（写死 229 在自适应后失效）
+      const spec30b = island.notchSpec();
+      const expectCover30 = spec30b && spec30b.zone ? island.stripFit().E + Math.round(spec30b.zone.w) + spec30b.slotLeft + spec30b.slotRight : -1;
       ok(
-        `T30 天气位置=盖板上（细条让位：has=${posCover30.has} 宽 ${posCover30.width} 期望 229；盖板上 chip=${JSON.stringify(coverWx30)}）`,
-        posCover30.has === false && posCover30.width === 229 && !!coverWx30 && coverWx30.on === true && coverWx30.temp.includes('21') && coverWx30.anim === 'rain'
+        `T30 天气位置=盖板上（细条让位：has=${posCover30.has} 宽 ${posCover30.width} 期望 ${expectCover30}=额度${island.stripFit().E}+禁区+槽位；盖板上 chip=${JSON.stringify(coverWx30)}）`,
+        posCover30.has === false && Math.abs(posCover30.width - expectCover30) <= 2 && !!coverWx30 && coverWx30.on === true && coverWx30.temp.includes('21') && coverWx30.anim === 'rain'
       );
       settings.update({ ui: { cameraNotch: { enabled: false } }, weather: { pos: 'right' } });
       island.applySettings();
@@ -5142,16 +5164,16 @@ function runTests() {
           })()`)
         : null;
       ok(
-        `T32 设置页外壳：侧栏导航 + 玻璃面板 + 无多余图标 (导航=${shell32 && shell32.dir} 分组=${shell32 && shell32.caps} 标签=${shell32 && shell32.tabs} 装饰图标=${shell32 && shell32.icons} 状态点=${shell32 && shell32.navDot} 搜索图标=${shell32 && shell32.searchIco}；标题栏玻璃=${JSON.stringify(shell32 && shell32.barBg)}/${JSON.stringify(shell32 && shell32.barBlur)}；字段两列=${JSON.stringify(shell32 && shell32.fieldCols)} 圆角=${shell32 && shell32.radius})`,
+        `T32 设置页外壳：侧栏导航 + 普通窗口（无玻璃）+ 无多余图标 (导航=${shell32 && shell32.dir} 分组=${shell32 && shell32.caps} 标签=${shell32 && shell32.tabs} 装饰图标=${shell32 && shell32.icons} 状态点=${shell32 && shell32.navDot} 搜索图标=${shell32 && shell32.searchIco}；标题栏底=${JSON.stringify(shell32 && shell32.barBg)}/${JSON.stringify(shell32 && shell32.barBlur)}；字段两列=${JSON.stringify(shell32 && shell32.fieldCols)} 圆角=${shell32 && shell32.radius})`,
         !!shell32 &&
           shell32.dir === 'column' &&
           shell32.caps >= 3 &&
-          shell32.tabs === 11 &&
+          shell32.tabs === 12 && // 11 + 新增的「打赏」页
           shell32.icons === 0 &&
           shell32.navDot === false &&
           shell32.searchIco === false &&
-          /rgba?\(/.test(shell32.barBg || '') &&
-          /blur/.test(shell32.barBlur || '') &&
+          // 按用户要求改成普通窗口：标题栏不再有 backdrop-filter 玻璃
+          !/blur/.test(shell32.barBlur || '') &&
           /px/.test(shell32.fieldCols || '') &&
           shell32.radius !== '0px'
       );
@@ -5376,7 +5398,7 @@ function runTests() {
       await sleep(600);
       const dockManual34 = island.decideState({
         idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'dock', smart: true, hideOnMaximized: true,
-        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        expandIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
         state: 'strip',
       });
       ok(
@@ -5386,7 +5408,7 @@ function runTests() {
       // 反过来：长按进入交互期（dockEdit/dockMenu）时**必须**进坞
       const dockByLong34 = island.decideState({
         idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
-        expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+        expandIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
         state: 'strip', dockInteractive: true,
       });
       ok(`T34 长按交互期才进坞（dockInteractive=true 判定=${dockByLong34}）`, dockByLong34 === 'dock');
@@ -5433,6 +5455,8 @@ function runTests() {
       const cfgDom34 = cfgWin34
         ? await cfgWin34.webContents.executeJavaScript(`(() => ({
             cornerOpt: !!document.querySelector('option[value="corner"]'),
+            progressOpt: !!document.querySelector('option[value="progress"]'),
+            fsOptions: Array.from(document.querySelectorAll('#fullscreenMode option')).map((o) => o.value).join(','),
             dockRadio: !!document.querySelector('input[name="manualMode"][value="dock"]'),
             hdEnabled: !!document.getElementById('hdEnabled'),
             hdList: !!document.getElementById('hd-list'),
@@ -5441,12 +5465,12 @@ function runTests() {
           }))()`)
         : null;
       ok(
-        `T34 角落卡片已去掉 + 配置页节假日（计时坞已从手动模式移除）(corner 选项=${cfgDom34 && cfgDom34.cornerOpt} 计时坞单选项=${cfgDom34 && cfgDom34.dockRadio}（期望 false） 节假日开关=${cfgDom34 && cfgDom34.hdEnabled} 列表=${cfgDom34 && cfgDom34.hdList} 分类页=${cfgDom34 && cfgDom34.hdTab} 手动模式=${JSON.stringify(cfgDom34 && cfgDom34.manualModes)}）`,
-        !!cfgDom34 && cfgDom34.cornerOpt === false && cfgDom34.dockRadio === false && cfgDom34.hdEnabled && cfgDom34.hdList && cfgDom34.hdTab &&
+        `T34 两个展示形态已删 + 配置页节假日（计时坞已从手动模式移除）(corner 选项=${cfgDom34 && cfgDom34.cornerOpt} 进度条选项=${cfgDom34 && cfgDom34.progressOpt} 全屏档位=${JSON.stringify(cfgDom34 && cfgDom34.fsOptions)}（期望 hide,strip） 计时坞单选项=${cfgDom34 && cfgDom34.dockRadio}（期望 false） 节假日开关=${cfgDom34 && cfgDom34.hdEnabled} 列表=${cfgDom34 && cfgDom34.hdList} 分类页=${cfgDom34 && cfgDom34.hdTab} 手动模式=${JSON.stringify(cfgDom34 && cfgDom34.manualModes)}）`,
+        !!cfgDom34 && cfgDom34.cornerOpt === false && cfgDom34.progressOpt === false && cfgDom34.fsOptions === 'hide,strip' && cfgDom34.dockRadio === false && cfgDom34.hdEnabled && cfgDom34.hdList && cfgDom34.hdTab &&
           // 「计时坞」不再是一个可常驻的手动模式（它由长按打开），所以配置页里不该再有这个单选项
           JSON.stringify(cfgDom34.manualModes) === JSON.stringify(['auto', 'pinned', 'zoom', 'hidden']) &&
-          // 旧配置里的 corner 会被迁移掉（用户入口已移除；内部状态仅供几何自检）
-          settings.load().smart.fullscreenState !== 'corner'
+          // 旧配置里的 corner / progress 会被版本链（to:2）迁移成 'strip'
+          settings.load().smart.fullscreenMode !== 'corner' && settings.load().smart.fullscreenMode !== 'progress'
       );
       // 历史遗留：settings 里若写着 manual.mode='dock'（长按旧实现写进去的），必须被迁回 auto，
       // 否则升级后启动仍会停在计时坞。
@@ -5480,7 +5504,8 @@ function runTests() {
       island.onAction({ type: 'longPress' });
       await sleep(900);
       const edit35 = await island.win.webContents.executeJavaScript(`(() => {
-        const chips = Array.from(document.querySelectorAll('.dk-chip, .dk-big'));
+        // 只数真正渲染出来的按钮：创建页里的「自定义…」入口是 hidden 的隐藏元素，不该算进来
+        const chips = Array.from(document.querySelectorAll('.dk-chip, .dk-big')).filter((c) => c.getClientRects().length > 0);
         const scale = document.getElementById('dk-scale');
         return {
           state: document.body.dataset.state,
@@ -5499,7 +5524,7 @@ function runTests() {
         };
       })()`);
       ok(
-        `T35 长按灵动岛→进坞创建页(对数游标尺+开始/取消)，且不写 manual.mode (manual.mode=${settings.load().manual.mode}（期望非 dock） 状态=${edit35.state} 控件=${edit35.hasRuler} 指示线=${edit35.hasNeedle}@${edit35.needleLeft}/${Math.round(edit35.rulerW / 2)} 可见刻度=${edit35.ticks}(粗=${edit35.majors}) 标签=${JSON.stringify(edit35.pickLabel)} 按钮=${edit35.labels})`,
+        `T35 长按灵动岛→进坞创建页(线性游标尺+开始/取消)，且不写 manual.mode (manual.mode=${settings.load().manual.mode}（期望非 dock） 状态=${edit35.state} 控件=${edit35.hasRuler} 指示线=${edit35.hasNeedle}@${edit35.needleLeft}/${Math.round(edit35.rulerW / 2)} 可见刻度=${edit35.ticks}(粗=${edit35.majors}) 标签=${JSON.stringify(edit35.pickLabel)} 按钮=${edit35.labels})`,
         // 关键：长按**不再**把 manual.mode 写成 'dock' —— 否则下次启动会停在计时坞
         settings.load().manual.mode !== 'dock' &&
           edit35.state === 'dock' &&
@@ -5542,15 +5567,68 @@ function runTests() {
       const left35 = await dragRuler(-160); // 向左 160px = 10 格 → 应显著变长
       const right35 = await dragRuler(160); // 再向右拖回
       ok(
-        `T35 游标尺可左右滑动改时长（对数）(初始=${JSON.stringify(before35)} 左拖10格=${JSON.stringify(left35 && left35.label)} 右拖回=${JSON.stringify(right35 && right35.label)})`,
+        `T35 游标尺可左右滑动改时长（线性）(初始=${JSON.stringify(before35)} 左拖10格=${JSON.stringify(left35 && left35.label)} 右拖回=${JSON.stringify(right35 && right35.label)})`,
         !!left35 && !!right35 && left35.label !== before35 && right35.label !== left35.label
       );
-      // 「无限拖拽」：一直往左拖，时间一直变大 —— **没有上限**（原先卡在 24 小时）
-      const far35 = await dragRuler(-4000); // ≈100 格 → 进对数段
-      const farHours = far35 && far35.label ? parseInt((String(far35.label).match(/^(\d+)/) || [])[1], 10) || 0 : 0;
+      // 「上限 6 小时」：一直往左拖也只会停在 6 小时（对数段已删，不再是无限）
+      const far35 = await dragRuler(-4000);
       ok(
-        `T35 游标尺可无限拖拽（无上限）(拖到 ${JSON.stringify(far35 && far35.label)} → ${farHours} 小时，> 24)`,
-        !!far35 && farHours > 24
+        `T35 刻度上限 6 小时（拖到头即停）(拖到 ${JSON.stringify(far35 && far35.label)})`,
+        !!far35 && /^6 小时$/.test(String(far35.label))
+      );
+      // 上界同样不该再画刻度（与下界对称）：那些格数会被 rulerSeconds 全压成 6 小时，
+      // 画出来就是一排不动的刻度。最右刻度不得超过指针位置。
+      const edgeUp35 = await island.win.webContents.executeJavaScript(`window.__rulerState()`);
+      ok(
+        `T35 划到上界后边界外不画刻度（刻度数=${edgeUp35.ticks.length} 最右=${edgeUp35.ticks.length ? Math.max.apply(null, edgeUp35.ticks) : '?'} 指针=${Math.round(edgeUp35.w / 2)} 上界格=${edgeUp35.max}）`,
+        edgeUp35.step === edgeUp35.max &&
+          edgeUp35.ticks.length > 0 &&
+          Math.max.apply(null, edgeUp35.ticks) <= Math.round(edgeUp35.w / 2) + 1
+      );
+      // 惯性三档：设置一改，渲染层取到的参数就该跟着换（丝滑与否就是这两个数）
+      const inertia35 = {};
+      for (const k of ['sharp', 'standard', 'soft']) {
+        settings.update({ ui: { timerInertia: k } });
+        island.broadcastEvents();
+        await sleep(220);
+        inertia35[k] = await island.win.webContents.executeJavaScript(`window.__rulerState().inertia`);
+      }
+      settings.update({ ui: { timerInertia: 'standard' } });
+      island.broadcastEvents();
+      await sleep(200);
+      ok(
+        `T35 惯性三档随设置切换 (急促=${JSON.stringify(inertia35.sharp)} 标准=${JSON.stringify(inertia35.standard)} 平缓=${JSON.stringify(inertia35.soft)})`,
+        !!inertia35.sharp && inertia35.sharp.decel === 1.2 &&
+          !!inertia35.standard && inertia35.standard.decel === 0.6 &&
+          !!inertia35.soft && inertia35.soft.decel === 0.28
+      );
+      // 到 6 小时后出现「自定义」入口：点开变分钟输入框，输入 500 分钟 → 标签与主进程选中的值都跟着变
+      const custom35 = await island.win.webContents.executeJavaScript(`(() => {
+        const chip = document.getElementById('dk-custom');
+        const entryShown = !!chip && !chip.hidden;
+        if (chip) chip.click();
+        const wrap = document.getElementById('dk-custom-wrap');
+        const input = document.getElementById('dk-custom-min');
+        const inputShown = !!wrap && !wrap.hidden && !!input;
+        if (input) input.value = '500';
+        const okBtn = document.getElementById('dk-custom-ok');
+        if (okBtn) okBtn.click();
+        const c2 = document.getElementById('dk-custom');
+        return {
+          entryShown: entryShown,
+          inputShown: inputShown,
+          label: (document.getElementById('dk-pick-label') || {}).textContent || '',
+          entryBack: !!c2 && !c2.hidden,
+        };
+      })()`);
+      await sleep(250);
+      ok(
+        `T35 到 6 小时出现「自定义」入口，输入 500 分钟生效 (入口=${custom35.entryShown} 输入框=${custom35.inputShown} 标签=${JSON.stringify(custom35.label)} 入口回来=${custom35.entryBack} 主进程选中=${island.dockPickSeconds} 秒)`,
+        custom35.entryShown === true &&
+          custom35.inputShown === true &&
+          /^8 小时 20 分$/.test(String(custom35.label)) &&
+          custom35.entryBack === true &&
+          island.dockPickSeconds === 500 * 60
       );
       // 大幅右拖 → 稳稳落到**最小值**（有惯性也一样，会被下界挡住）
       await dragRuler(9000);
@@ -5558,6 +5636,15 @@ function runTests() {
       ok(
         `T35 一直向右拖 → 落到最小值 5 秒（1 分钟以下进入秒级）(=${JSON.stringify(reset35)})`,
         /^5 秒$/.test(reset35)
+      );
+      // 划到头之后边界外**不再画刻度**：那些格数会被 rulerSeconds 全压成 5 秒，
+      // 画出来是一排不动的刻度，看起来像「卡住了」。左端应停在指针处（= 下界那一格）。
+      const edge35 = await island.win.webContents.executeJavaScript(`window.__rulerState()`);
+      ok(
+        `T35 划到下界后边界外不画刻度（刻度数=${edge35.ticks.length} 最左=${edge35.ticks.length ? Math.min.apply(null, edge35.ticks) : '?'} 指针=${Math.round(edge35.w / 2)} 下界格=${edge35.min}）`,
+        edge35.step === edge35.min &&
+          edge35.ticks.length > 0 &&
+          Math.min.apply(null, edge35.ticks) >= Math.round(edge35.w / 2) - 1
       );
       // 从最小值再往左滑 → 仍在秒级区间内可调（这就是"1 分钟时继续左滑设秒"）
       await dragRuler(-64);
@@ -5639,23 +5726,11 @@ function runTests() {
         // 这样断言的是"游标尺选中的值 → 实际计时时长"的真实链路。
         island.onAction({ type: 'longPress' });
         await sleep(1000);
-        // 先把游标尺拖到 15 分钟，再点开始
-        await island.win.webContents.executeJavaScript(`(() => {
-          const r = document.getElementById('dk-ruler');
-          if (!r) return false;
-          const b = r.getBoundingClientRect();
-          const cx = Math.round(b.left + b.width / 2), cy = Math.round(b.top + b.height / 2);
-          const mk = (type, x) => new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: cy, pointerId: 1, isPrimary: true, button: 0, buttons: 1 });
-          // 先大幅右拖复位到最小值，再左拖 7.5 格 → 15 分钟（线性段每格 2 分钟）
-          r.dispatchEvent(mk('pointerdown', cx));
-          document.dispatchEvent(mk('pointermove', cx + 4000));
-          document.dispatchEvent(mk('pointerup', cx + 4000));
-          r.dispatchEvent(mk('pointerdown', cx));
-          document.dispatchEvent(mk('pointermove', cx - 288));
-          document.dispatchEvent(mk('pointerup', cx - 288));
-          return true;
-        })()`);
-        await sleep(1400); // 等惯性滑停，再读选中值（否则读到的是减速途中的值）
+        // 用「按秒设值」的钩子把游标尺设到 37 分 30 秒（2250s）。
+        // ⚠️ 原来这里按像素拖（注释写着「线性段每格 2 分钟」），步长一改成 5 分钟就设错值
+        //    （实测设成了 71 分钟，后面按 mm:ss 解析剩余时间的断言跟着全崩）。
+        await island.win.webContents.executeJavaScript(`window.__rulerSetSeconds(2250)`);
+        await sleep(600);
         // 读标签与点「开始」放在**同一次** JS 求值里：中间不再隔着惯性/动画，读到什么就开什么。
         const startInfo = await island.win.webContents.executeJavaScript(`(() => {
           const label = (document.getElementById('dk-pick-label') || {}).textContent || '';
@@ -5757,7 +5832,7 @@ function runTests() {
         // 这里直接测状态机判定（渲染层的那条 zoom+timer 分支已按同一要求移除）。
         const z36 = island.decideState({
           idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'auto', smart: true, hideOnMaximized: true,
-          expandIdleSec: 4, zoomIdleSec: 5, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+          expandIdleSec: 5, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
           hasTimer: true, state: 'strip',
         });
         ok(
@@ -5767,7 +5842,7 @@ function runTests() {
         // 对照：没有计时时，「大窗口驻留」照常生效（别把大窗口功能一起禁掉）
         const z36b = island.decideState({
           idleMs: 0, occluded: false, maximized: false, overPill: false, mode: 'zoom', smart: true, hideOnMaximized: true,
-          expandIdleSec: 4, zoomIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
+          expandIdleSec: 0, zoomAllowed: true, zoomCooldown: false, holding: false, hasCountdown: true,
           hasTimer: false, state: 'strip',
         });
         ok(`T36 无计时时「大窗口驻留」仍生效 (判定=${z36b}，期望 zoom)`, z36b === 'zoom');

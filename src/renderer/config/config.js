@@ -286,6 +286,7 @@ async function init() {
   // 显示设置
   $('#glassMode').value = S.ui.glassMode;
   $('#stripStyle').value = S.ui.stripStyle === 'glass' ? 'glass' : 'black';
+  $('#timerInertia').value = ['sharp', 'standard', 'soft'].includes(S.ui.timerInertia) ? S.ui.timerInertia : 'standard';
   $('#darkMode').checked = !!S.ui.darkMode;
   applyDarkMode(S.ui.darkMode);
   $('#display').value = S.ui.display;
@@ -293,8 +294,6 @@ async function init() {
   $('#display-index-wrap').hidden = S.ui.display !== 'index';
   $('#opStrip').value = Math.round((S.ui.opacity.strip ?? 0.6) * 100);
   $('#opZoom').value = Math.round((S.ui.opacity.zoom ?? 0.96) * 100);
-  $('#opCorner').value = Math.round((S.ui.opacity.corner ?? 0.9) * 100);
-  $('#opProgress').value = Math.round((S.ui.opacity.progress ?? 0.55) * 100);
   $('#alwaysOnTop').checked = !!S.ui.alwaysOnTop;
   $('#showSeconds').checked = !!S.ui.showSeconds;
   $('#glassGlow').value = typeof S.ui.glassGlow === 'number' ? S.ui.glassGlow : 100;
@@ -353,11 +352,9 @@ async function init() {
   $('#notifyShowSec').value = S.smart.notifyShowSec ?? 8;
   $('#notifyMinGapSec').value = S.smart.notifyMinGapSec ?? 5;
   $('#hideOnMaximized').checked = S.smart.hideOnMaximized !== false;
-  $('#fullscreenMode').value = ['corner', 'progress', 'strip'].includes(S.smart.fullscreenMode) ? S.smart.fullscreenMode : 'hide';
-  $('#progressTotalDays').value = typeof S.smart.progressTotalDays === 'number' ? S.smart.progressTotalDays : 365;
-  $('#progressDaysRow').hidden = $('#fullscreenMode').value !== 'progress';
+  // 两个展示形态已删除 → 只剩 'hide' | 'strip'（主进程 resolveFullscreenState 同一口径）
+  $('#fullscreenMode').value = S.smart.fullscreenMode === 'strip' ? 'strip' : 'hide';
   $('#expandIdleSec').value = S.smart.expandIdleSec;
-  $('#zoomIdleSec').value = S.smart.zoomIdleSec ?? 0;
   $('#zoomEnabled').checked = !!S.smart.zoomEnabled;
   $('#cycleEnabled').checked = !!S.smart.cycleEnabled;
   $('#cycleSec').value = S.smart.cycleSec;
@@ -1159,14 +1156,15 @@ $('#event-list').addEventListener('click', async (e) => {
 /* ---------- 编辑器 ---------- */
 
 let editingId = null;
+// 图标与强调色已从面板移除：这里保存它们的「内部值」——编辑时保留原值、新建用默认值
+let editorMeta = { emoji: '', color: '#4f7cff' };
 
 function openEditor(ev) {
   editingId = ev ? ev.id : null;
   $('#editor-title').textContent = ev ? '编辑事件' : '添加事件';
   $('#ev-name').value = ev ? ev.name : '';
   $('#ev-date').value = ev ? localInputValue(ev.date) : '';
-  $('#ev-emoji').value = ev ? ev.emoji || '' : '';
-  $('#ev-color').value = ev ? ev.color || '#4f7cff' : '#4f7cff';
+  editorMeta = { emoji: ev ? ev.emoji || '' : '', color: ev ? ev.color || '#4f7cff' : '#4f7cff' };
   $('#ev-enabled').checked = ev ? ev.enabled !== false : true;
   $('#editor-mask').hidden = false;
 }
@@ -1174,6 +1172,29 @@ function openEditor(ev) {
 function closeEditor() {
   $('#editor-mask').hidden = true;
   editingId = null;
+}
+
+/* 中高考快速预设：一键填好简称 + 下一个对应日期（图标/强调色已从面板移除，内部给默认值）。
+   日期按「已经过了就取明年」处理，所以老师不用每年手动改。 */
+const ANNUAL_PRESETS = {
+  gaokao: { name: '高考', month: 6, day: 7, emoji: '🎓' },
+  zhongkao: { name: '中考', month: 6, day: 13, emoji: '📝' },
+};
+function nextAnnualInput(month, day) {
+  const now = new Date();
+  let d = new Date(now.getFullYear(), month - 1, day, 9, 0, 0);
+  if (d.getTime() <= now.getTime()) d = new Date(now.getFullYear() + 1, month - 1, day, 9, 0, 0);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+for (const [key, cfg] of Object.entries(ANNUAL_PRESETS)) {
+  const btn = document.getElementById('btn-preset-' + key);
+  if (!btn) continue;
+  btn.addEventListener('click', () => {
+    $('#ev-name').value = cfg.name;
+    $('#ev-date').value = nextAnnualInput(cfg.month, cfg.day);
+    editorMeta = { emoji: cfg.emoji, color: '#4f7cff' };
+  });
 }
 
 $('#btn-add-event').addEventListener('click', () => openEditor(null));
@@ -1188,8 +1209,8 @@ $('#btn-ev-save').addEventListener('click', async () => {
     id: editingId,
     name,
     date: date + ':00',
-    emoji: $('#ev-emoji').value.trim() || '⏰',
-    color: $('#ev-color').value,
+    emoji: editorMeta.emoji || '⏰',
+    color: editorMeta.color || '#4f7cff',
     enabled: $('#ev-enabled').checked,
   };
   if (editingId) await window.config.events.update(payload);
@@ -1220,8 +1241,6 @@ bind('#display', (el) => {
 bind('#displayIndex', (el) => ({ ui: { displayIndex: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#opStrip', (el) => ({ ui: { opacity: { strip: parseInt(el.value, 10) / 100 } } }));
 bind('#opZoom', (el) => ({ ui: { opacity: { zoom: parseInt(el.value, 10) / 100 } } }));
-bind('#opCorner', (el) => ({ ui: { opacity: { corner: parseInt(el.value, 10) / 100 } } }));
-bind('#opProgress', (el) => ({ ui: { opacity: { progress: parseInt(el.value, 10) / 100 } } }));
 bind('#classical', (el) => ({ ui: { classical: el.checked } }));
 bind('#darkMode', (el) => ({ ui: { darkMode: el.checked } }));
 // 开机自启：写完注册表后按真实状态回填（写失败 / 被系统禁用时不会显示成"已勾上"）
@@ -1233,6 +1252,7 @@ if (autoStartEl) {
   });
 }
 bind('#stripStyle', (el) => ({ ui: { stripStyle: el.value } }));
+bind('#timerInertia', (el) => ({ ui: { timerInertia: ['sharp', 'standard', 'soft'].includes(el.value) ? el.value : 'standard' } }));
 bind('#alwaysOnTop', (el) => ({ ui: { alwaysOnTop: el.checked } }));
 bind('#showSeconds', (el) => ({ ui: { showSeconds: el.checked } }));
 bind('#glassGlow', (el) => ({ ui: { glassGlow: Math.max(0, Math.min(200, parseInt(el.value, 10) || 0)) } }));
@@ -1244,13 +1264,8 @@ bind('#notifyEnabled', (el) => ({ smart: { notifyEnabled: el.checked } }));
 bind('#notifyShowSec', (el) => ({ smart: { notifyShowSec: Math.max(2, parseInt(el.value, 10) || 8) } }));
 bind('#notifyMinGapSec', (el) => ({ smart: { notifyMinGapSec: Math.max(0, Math.min(120, parseInt(el.value, 10) || 0)) } }));
 bind('#hideOnMaximized', (el) => ({ smart: { hideOnMaximized: el.checked } }));
-bind('#fullscreenMode', (el) => {
-  $('#progressDaysRow').hidden = el.value !== 'progress';
-  return { smart: { fullscreenMode: el.value } };
-});
-bind('#progressTotalDays', (el) => ({ smart: { progressTotalDays: Math.max(1, Math.min(10000, parseInt(el.value, 10) || 365)) } }));
+bind('#fullscreenMode', (el) => ({ smart: { fullscreenMode: el.value === 'strip' ? 'strip' : 'hide' } }));
 bind('#expandIdleSec', (el) => ({ smart: { expandIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
-bind('#zoomIdleSec', (el) => ({ smart: { zoomIdleSec: Math.max(0, parseInt(el.value, 10) || 0) } }));
 bind('#zoomEnabled', (el) => ({ smart: { zoomEnabled: el.checked } }));
 bind('#cycleEnabled', (el) => ({ smart: { cycleEnabled: el.checked } }));
 bind('#cycleSec', (el) => ({ smart: { cycleSec: Math.max(2, parseInt(el.value, 10) || 6) } }));

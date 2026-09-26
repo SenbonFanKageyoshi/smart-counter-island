@@ -1,6 +1,5 @@
 /* ===== 配置窗口样式（液态玻璃版） =====
    底：Win11 亚克力（真实桌面模糊，见 main/config.js 的 setBackgroundMaterial('acrylic')）
-   上面：半透明玻璃面板 + backdrop-filter 模糊 + 高光描边 + 柔和高光渐变
    变量名沿用旧的一套（--bg/--card/--ink/…），下游组件样式不用改就跟着换皮 */
 :root {
   --glass: rgba(255, 255, 255, 0.55);
@@ -10,8 +9,8 @@
   --shadow: 0 10px 30px rgba(31, 45, 80, 0.12);
   --radius: 14px;
 
-  --bg: rgba(238, 243, 251, 0.86);
-  --bg2: rgba(248, 251, 255, 0.9);
+  --bg: #eef3fb;
+  --bg2: #f8fbff;
   --card: var(--glass);
   --ink: #1c2b4a;
   /* 对比度：--muted 原为 #66748f，在最暗壁纸下仅 3.92:1（低于 WCAG AA 正文 4.5:1）。
@@ -36,8 +35,8 @@ body.dark {
   --glass-hi: rgba(255, 255, 255, 0.22);
   --shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
 
-  --bg: rgba(16, 21, 31, 0.82);
-  --bg2: rgba(22, 29, 43, 0.86);
+  --bg: #10151f;
+  --bg2: #161d2b;
   --card: var(--glass);
   --ink: #e6edfb;
   --muted: #93a2c0;
@@ -214,8 +213,6 @@ header#titlebar {
   gap: 12px;
   padding: 12px 14px 12px 16px;
   background: var(--glass-strong);
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
   border-bottom: 1px solid var(--glass-line);
   box-shadow: 0 1px 0 var(--glass-hi) inset;
   cursor: default;
@@ -308,8 +305,6 @@ nav#tabs {
   padding: 12px 10px 10px;
   overflow-y: auto;
   background: var(--glass);
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
   border-right: 1px solid var(--glass-line);
 }
 .nav-cap {
@@ -366,7 +361,6 @@ main {
 
 /* —— 字段：玻璃卡片 + 两列（左标签 / 右控件），窄窗自动回落成上下 —— */
 .field {
-  /* 注意：这里刻意不用 backdrop-filter —— 几十张卡片同时模糊会在滚动时留下拖影、也很吃 GPU。
      玻璃感由底（亚克力/body 渐变）+ 半透明卡片 + 高光描边提供。 */
   background: var(--glass);
   transform: translateZ(0);
@@ -566,6 +560,8 @@ textarea::placeholder { color: var(--muted); }
 }
 .editor h3 { font-size: 16px; margin-bottom: 14px; }
 .editor .field { margin-bottom: 10px; padding: 0; border: none; }
+.ev-presets { display: flex; gap: 8px; flex-wrap: wrap; }
+.ev-preset { padding: 6px 16px; font-weight: 600; }
 .editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
 /* 关于 */
@@ -627,3 +623,33 @@ textarea::placeholder { color: var(--muted); }
 }
 .paused-note b { font-size: 13.5px; }
 .paused-note span { font-size: 12px; line-height: 1.5; color: var(--muted); }
+
+
+/* ===== 打赏页 ===== */
+.reward-hero {
+  margin: 0 0 16px;
+  padding: 13px 15px;
+  border-radius: 12px;
+  border: 1px solid rgba(45, 85, 224, 0.28);
+  background: rgba(45, 85, 224, 0.07);
+}
+.reward-hero b { display: block; font-size: 14px; margin-bottom: 6px; color: var(--ink); }
+.reward-hero p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.65; color: var(--ink); }
+.reward-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 18px;
+}
+.reward-grid figure {
+  flex: 1 1 180px;
+  max-width: 240px;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid rgba(120, 132, 158, 0.22);
+  text-align: center;
+}
+.reward-grid img { width: 100%; max-width: 200px; height: auto; border-radius: 8px; display: block; margin: 0 auto; }
+.reward-grid figcaption { margin-top: 8px; font-size: 12.5px; font-weight: 700; color: var(--ink); }

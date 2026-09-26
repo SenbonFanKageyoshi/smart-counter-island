@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('island', {
   onNotify: (cb) => ipcRenderer.on('island:notify', (_e, d) => cb(d)),
   onAnim: (cb) => ipcRenderer.on('island:anim', (_e, d) => cb(d)),
   onGeom: (cb) => ipcRenderer.on('island:geom', (_e, g) => cb(g)),
+  onPress: (cb) => ipcRenderer.on('island:press', (_e, on) => cb(on)),
   // 渲染层 → 主进程
   ready: () => ipcRenderer.send('island:ready'),
   action: (a) => ipcRenderer.invoke('island:action', a),

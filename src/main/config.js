@@ -46,12 +46,12 @@ function open() {
   win = require('./quiet').quiet(new BrowserWindow({
     ...windowSize(),
     title: 'Smart Counter Island · 配置',
-    // 无边框 + Win11 亚克力：窗口背后的真实桌面被系统模糊/提色 = 真液态玻璃底
-    // （Win10 或不支持时 setBackgroundMaterial 会抛错，CSS 自带深色玻璃兜底）
-    frame: false,
-    backgroundColor: '#00000000',
-    roundedCorners: true,
-    thickFrame: true, // 无边框也保留边缘可拖拽缩放
+    // 普通窗口：系统原生标题栏 + 不透明底色。
+    // 原先是无边框 + 透明 + Win11 亚克力（拿背后真实桌面做模糊），观感花哨但不实用 ——
+    // 拖动/关闭都要自绘，缩放边缘也容易误触。按用户要求改回「就是普通窗口」。
+    frame: true,
+    backgroundColor: '#f4f5f7',
+    autoHideMenuBar: true,
     autoHideMenuBar: true,
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     show: false, // 加载完成后再显示，避免白屏闪现
@@ -63,11 +63,7 @@ function open() {
       backgroundThrottling: false,
     },
   }));
-  try {
-    win.setBackgroundMaterial('acrylic');
-  } catch (e) {
-    /* Win10 / 不支持：忽略，CSS 兜底 */
-  }
+  // 不再设置亚克力背景材质：普通窗口用不透明底色即可
   win.setMenuBarVisibility(false);
   // 配置窗口不置顶（用户反馈置顶烦人）；小岛放大态可能盖住它，从托盘/小岛双击仍可重新打开
   win.webContents.on('did-finish-load', () => {

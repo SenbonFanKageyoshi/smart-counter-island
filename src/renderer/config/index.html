@@ -39,6 +39,7 @@
   <div class="nav-cap">行为与系统</div>
   <button class="tab" data-tab="smart">智能行为</button>
   <button class="tab" data-tab="advanced">高级</button>
+  <button class="tab" data-tab="reward">打赏</button>
   <button class="tab" data-tab="about">关于</button>
   <div class="nav-foot">
     <span id="navHint">改动即时生效</span>
@@ -221,8 +222,6 @@
       <div class="opacity-row">
         <span>灵动岛</span><input type="range" id="opStrip" min="0" max="100" step="1">
         <span>倒计时窗口</span><input type="range" id="opZoom" min="0" max="100" step="1">
-        <span>角落卡片</span><input type="range" id="opCorner" min="0" max="100" step="1">
-        <span>进度条</span><input type="range" id="opProgress" min="0" max="100" step="1">
       </div>
     </div>
     <div class="field">
@@ -231,6 +230,15 @@
         <option value="black">黑底白字</option>
         <option value="glass">跟随玻璃效果</option>
       </select>
+    </div>
+    <div class="field">
+      <label>计时坞惯性</label>
+      <select id="timerInertia">
+        <option value="sharp">急促</option>
+        <option value="standard">标准</option>
+        <option value="soft">平缓</option>
+      </select>
+      <p class="hint">设置计时时长时，松手后刻度继续滑行的手感：平缓最绵长、急促最干脆。</p>
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="alwaysOnTop"> 始终置顶</label>
@@ -275,23 +283,14 @@
       <label>全屏授课时（真全屏，不含最大化）</label>
       <select id="fullscreenMode">
         <option value="hide">完全隐藏</option>
-        <option value="progress">屏幕顶部进度条</option>
         <option value="strip">保持灵动岛小条</option>
       </select>
-    </div>
-    <div class="field" id="progressDaysRow">
-      <label>进度条总量（天）</label>
-      <input type="number" id="progressTotalDays" min="1" max="10000" step="1">
+      <p class="hint">「顶部进度条」「右上角卡片」两个形态已移除。</p>
     </div>
     <div class="field">
       <label>闲置多少秒后放大到大窗口</label>
-      <input type="number" id="expandIdleSec" min="0" max="120" step="1">
-      <p class="hint">仅在下面「自动放大门槛」大于 0 时生效；实际等待取两者较大值。</p>
-    </div>
-    <div class="field">
-      <label>自动放大门槛（秒）</label>
-      <input type="number" id="zoomIdleSec" min="0" max="3600" step="1">
-      <p class="hint">0 = 永不自动放大（默认）。大窗口会盖住桌面内容且鼠标穿透，建议保持 0，需要时手动放大。</p>
+      <input type="number" id="expandIdleSec" min="0" max="3600" step="1">
+      <p class="hint">0 = 永不自动放大（默认）。大窗口会盖住桌面内容、鼠标穿透（点不到也关不掉），建议保持 0；需要时手动放大或按住灵动岛下滑。</p>
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" id="zoomEnabled"> 允许倒计时窗口</label>
@@ -475,7 +474,7 @@
 
     <div class="field"><label>天气显示位置</label>
       
-      <div class="hint">天气**只显示在盖板上**（中间那块传感器窗口），灵动岛细条不再显示天气。<br>⚠️ 需要先启用下面的「盖板」；盖板未启用时天气不会显示。
+      <div class="hint">天气<b>只显示在盖板上</b>（中间那块传感器窗口），灵动岛细条不再显示天气。<br>盖板未启用时，天气会自动改画在<b>大窗口</b>里（细条始终不显示天气）。
         <br>盖板上还想显示文字/变量 →「显示效果 → 传感器盖板内容」。</div>
     </div>
 
@@ -765,16 +764,47 @@
       <p class="small">Windows 10 / 11 · 免安装运行库</p>
     </div>
   </section>
+  <!-- ============ 打赏 ============ -->
+  <section id="tab-reward" class="tabpage">
+    <div class="reward-hero">
+      <b>打赏完全出于自愿</b>
+      <p>这是一款免费软件：<b>所有功能都不需要付费，也没有任何功能被锁在打赏后面</b>。不打赏不会有任何影响，请不要因为"支持作者"而觉得有负担 —— 用得顺手就好。</p>
+      <p>如果它确实帮到了你，并且你<b>愿意</b>，可以扫下面的码请作者喝杯水。金额不分多少，心意都一样。</p>
+    </div>
+    <div class="reward-grid">
+      <figure><img src="reward/3元.png" alt="打赏 3 元"><figcaption>3 元</figcaption></figure>
+      <figure><img src="reward/5元.png" alt="打赏 5 元"><figcaption>5 元</figcaption></figure>
+      <figure><img src="reward/8元.png" alt="打赏 8 元"><figcaption>8 元</figcaption></figure>
+    </div>
+    <div class="field">
+      <label>这笔钱会用在哪儿</label>
+      <div class="hint">天气数据接口等运行成本，以及后续版本的开发与测试。没有服务器租金之类的长期开销，所以真的不需要靠打赏维持 —— 它更像是一种「这东西我用得上」的反馈。</div>
+    </div>
+    <div class="field">
+      <label>关于反馈</label>
+      <div class="hint">发现 bug 或想加功能，欢迎直接提 issue。<b>提问题和打赏没有任何关系</b>，不打赏一样会看、一样会修。</div>
+    </div>
+  </section>
 </main>
 
 <!-- 事件编辑弹层 -->
 <div id="editor-mask" class="mask" hidden>
   <div id="editor" class="editor">
     <h3 id="editor-title">添加事件</h3>
-    <div class="field"><label>名称</label><input type="text" id="ev-name" placeholder="如：高考"></div>
+    <div class="field">
+      <label>简称</label>
+      <input type="text" id="ev-name" placeholder="如：高考 / 期末" maxlength="12">
+      <p class="hint">灵动岛上位置很窄，写短一点更好看。</p>
+    </div>
+    <div class="field">
+      <label>快速预设</label>
+      <div class="ev-presets">
+        <button type="button" class="btn ev-preset" id="btn-preset-gaokao">高考</button>
+        <button type="button" class="btn ev-preset" id="btn-preset-zhongkao">中考</button>
+      </div>
+      <p class="hint">一键填好简称与下一个中/高考日期（高考 6 月 7 日、中考 6 月 13 日），仍可再改。</p>
+    </div>
     <div class="field"><label>目标时间</label><input type="datetime-local" id="ev-date"></div>
-    <div class="field"><label>图标</label><input type="text" id="ev-emoji" placeholder="🎓" maxlength="8"></div>
-    <div class="field"><label>强调色</label><input type="color" id="ev-color" value="#4f7cff"></div>
     <div class="field"><label class="inline"><input type="checkbox" id="ev-enabled" checked> 启用</label></div>
     <div class="editor-actions">
       <button id="btn-ev-cancel" class="btn">取消</button>

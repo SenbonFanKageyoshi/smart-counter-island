@@ -109,57 +109,114 @@ if (window.cover && typeof window.cover.onContent === 'function') {
   renderContent(null);
 }
 
-/* ---- 长按盖板→启动计时坞（与长按灵动岛同一动作）----
-   盖板是一块很小的黑胶囊，反馈就用一条底部进度条长出来。 */
+/* ---- 盖板上的指针手势：与灵动岛完全一致 ----
+   · 单击 → 收起      · 双击 → 打开配置
+   · 按住上下拖（>25px）→ 下滑放大 / 上滑收起
+   · 长按 700ms → 进计时坞（与长按灵动岛同一动作）
+   ⚠️ 起点必须在 pointerdown 时重置：旧实现把起点惰性记在 document 上（this._sx）且从不清，
+      第二次以后的长按会拿**上一次手势的起点**做比较 → 手指微动 8px 就误取消长按，
+      表现就是「长按盖板没反应」。（灵动岛本体没有这个问题，指针逻辑就照它写。）
+   ⚠️ 盖板只有 87×26，指针很快移出窗口 → 必须 setPointerCapture，否则收不到 move/up。 */
 (function () {
   var LONG_PRESS_MS = 700;
-  var timer = null;
-  var fired = false;
-  var root = document.getElementById('root') || document.body;
+  var drag = null;
+  var longPressTimer = null;
+  var longPressFired = false;
+  var tapTimer = null;
+  var lastTap = 0;
+
   function hint(on) {
-    // 只做"稍微放大"，不再画进度条
     document.body.classList.toggle('pressing', !!on);
+    // 灵动岛本体同步同一个反馈：视线通常在岛上，盖板这块小胶囊放大几像素看不出来
+    try {
+      window.cover.press(!!on);
+    } catch (err) {
+      /* ignore */
+    }
   }
-  function clear() {
-    clearTimeout(timer);
-    timer = null;
-    hint(false);
+  function fired() {
+    document.body.classList.add('press-fired');
+    setTimeout(function () {
+      document.body.classList.remove('press-fired');
+    }, 220);
   }
+  function clearLP() {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  function send(a) {
+    try {
+      window.cover.action(a);
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
   document.addEventListener('pointerdown', function (e) {
     if (e.button != null && e.button !== 0) return;
-    clear();
+    if (e.target && e.target.closest && e.target.closest('button')) return; // ✓/✗ 照常可点
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, moved: false, dx: 0, dy: 0 };
+    clearLP();
+    longPressFired = false;
     hint(true);
-    timer = setTimeout(function () {
-      fired = true;
-      document.body.classList.add('press-fired');
-      try {
-        window.cover.longPress();
-      } catch (err) {
-        /* ignore */
-      }
-      setTimeout(function () {
-        document.body.classList.remove('press-fired');
-        hint(false);
-      }, 220);
+    longPressTimer = setTimeout(function () {
+      longPressFired = true;
+      hint(false);
+      fired();
+      send({ type: 'longPress' });
     }, LONG_PRESS_MS);
+    try {
+      if (e.target && e.target.setPointerCapture) e.target.setPointerCapture(e.pointerId);
+    } catch (err) {
+      /* ignore */
+    }
   });
+
   document.addEventListener('pointermove', function (e) {
-    if (!timer || !e) return;
-    // 移动超过 8px 就当作"想滑/想拖"→ 取消长按（避免与其他手势冲突）
-    if (!this._sx) {
-      this._sx = e.clientX;
-      this._sy = e.clientY;
+    if (!drag || e.pointerId !== drag.id) return;
+    var dx = e.clientX - drag.x;
+    var dy = e.clientY - drag.y;
+    // 真的移动了（竖直 >6px 就算「想滑」）→ 立刻取消长按，避免「长按进坞 + 抬手又放大」双动作
+    var vIntent = Math.abs(dy) > 6 && Math.abs(dy) >= Math.abs(dx);
+    if (!drag.moved && (Math.abs(dy) > 6 || Math.abs(dx) > 6)) {
+      drag.moved = true;
+      if (vIntent || Math.abs(dy) > 8 || Math.abs(dx) > 8) {
+        clearLP();
+        hint(false);
+      }
+    }
+    if (drag.moved) {
+      drag.dx = dx;
+      drag.dy = dy;
+    }
+  });
+
+  function endPointer(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var d = drag;
+    drag = null;
+    clearLP();
+    hint(false);
+    if (d.moved) {
+      if (longPressFired) { longPressFired = false; return; }
+      send({ type: 'gesture', dy: d.dy });
       return;
     }
-    if (Math.abs(e.clientX - this._sx) > 8 || Math.abs(e.clientY - this._sy) > 8) {
-      this._sx = 0;
-      clear();
+    if (longPressFired) { longPressFired = false; return; }
+    var now = Date.now();
+    if (now - lastTap < 320) {
+      lastTap = 0;
+      clearTimeout(tapTimer);
+      send({ type: 'doubleTap' });
+    } else {
+      lastTap = now;
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(function () {
+        lastTap = 0;
+        send({ type: 'tap' });
+      }, 300);
     }
-  });
-  document.addEventListener('pointerup', function () {
-    clear();
-  });
-  document.addEventListener('pointercancel', function () {
-    clear();
-  });
+  }
+  document.addEventListener('pointerup', endPointer);
+  document.addEventListener('pointercancel', endPointer);
 })();

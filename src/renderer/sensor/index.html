@@ -30,10 +30,11 @@
   }
 
   /* 自定义文字（模板 + 程序变量，主进程渲染好文本后推下来） */
-  /* 长按反馈：只稍微放大（不做进度条）。盖板很窄，放大幅度取小一点更自然 */
+  /* 长按/按下反馈：只放大、不发光（用户明确要求「不要发光」）。
+     1.06 实在看不出来（87px 宽的胶囊只放大 5px），提到 1.12；灵动岛本体另有一条同步通路。 */
   body { transition: transform 0.13s cubic-bezier(0.22, 0.61, 0.36, 1); }
-  body.pressing { transform: scale(1.06); }
-  body.press-fired { transform: scale(1.1); }
+  body.pressing { transform: scale(1.12); }
+  body.press-fired { transform: scale(1.18); }
 
   #txt {
     color: #fff;

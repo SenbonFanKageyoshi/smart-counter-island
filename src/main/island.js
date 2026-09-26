@@ -25,6 +25,10 @@ function bitmapHash(buf) {
   return (h ^ buf.length) >>> 0;
 }
 
+/** 细条两侧各留的呼吸空间（px）：0 = 内容紧贴窗口边与盖板禁区，视觉上太割裂。
+    只影响细条宽度（额度 = 两瓣 + 2×行内间距 + 2×本值），其它形态几何一律不动。 */
+const STRIP_SIDE_PAD = 10;
+
 /** 各状态下的灵动岛本体尺寸（不含边距，DIP） */
 const PILL = {
   strip: { w: 116, h: 26 },    // 细条（默认形态）
@@ -36,8 +40,6 @@ const PILL = {
   // 计时坞**创建页**：只有一行（时间 + 游标尺 + 两个大按钮），所以窗口收紧到刚好贴合刻度 ——
   // 之前复用 158 的目标高度，底部留了 30px 空白。12+52+54+10 = 128。
   dockPicker: { w: 560, h: 128 },
-  corner: { w: 180, h: 72 },   // 角落卡片：已从所有用户入口移除（内部状态，仅供几何自检）
-  progress: { w: 0, h: 16 },   // 全屏授课：屏幕顶部倒计时进度条（宽度 = 工作区整宽）
 };
 
 /** 细条常驻天气时右侧预留的宽度（紧凑 chip：图标 + 温度，不显示文字）。
@@ -151,11 +153,10 @@ function decideState(input) {
   const {
     idleMs, occluded, maximized, overPill, state,
     mode, smart, hideOnMaximized,
-    expandIdleSec, zoomIdleSec, zoomAllowed, zoomCooldown, holding, hasCountdown,
-    fullscreenState = 'strip', // 全屏授课时的目标形态：'strip' | 'progress'
+    expandIdleSec, zoomAllowed, zoomCooldown, holding, hasCountdown,
+    fullscreenState = 'strip', // 全屏授课时的目标形态：'strip'（'hide' 由调用方直接隐藏窗口）
     dockInteractive = false, // 计时坞正处于「创建页 / 操作页」（仅由长按进入的一次性交互）
     hasTimer = false, // 是否有正在走的短时计时
-    expandedSinceMs = 0, // 横幅（expanded）已持续展示的毫秒数；非横幅状态为 0
   } = input;
 
   // 手动操作保持期：优先于一切（否则手动放大的大屏会被立刻拉回）
@@ -173,13 +174,9 @@ function decideState(input) {
   // 没有计时时间（无有效事件）：锁定灵动岛
   if (!hasCountdown) return 'strip';
 
-  // 全屏遮挡：锁定为配置的形态（默认灵动岛；可改成右上角卡片 / 顶部进度条）+ 鼠标穿透，
-  // 不响应任何操作/不唤起（含手动隐藏、固定模式）
-  if (occluded) {
-    if (fullscreenState === 'corner') return 'corner'; // 用户入口已移除，仅内部/自检可达
-    if (fullscreenState === 'progress') return 'progress';
-    return 'strip';
-  }
+  // 全屏遮挡：锁定为灵动岛 + 鼠标穿透，不响应任何操作/不唤起（含手动隐藏、固定模式）。
+  // （角落卡片与顶部进度条两个展示形态已按用户要求删除）
+  if (occluded) return 'strip';
 
   // 注：这里原有 `if (mode === 'dock') return 'dock';` —— 「计时坞」曾是可常驻的手动模式。
   // 但长按进入时会把它写进 settings.manual.mode，于是**下次启动直接停在计时坞**
@@ -198,9 +195,8 @@ function decideState(input) {
   }
 
   // 光标悬停在小岛上：保持现状（不来回切换，按钮可点击）；
-  // 大屏为纯展示态（鼠标穿透、不可操作）：悬停不阻止收起，有操作即回到灵动岛；
-  // 角落卡片/顶部进度条同理：它们横跨屏幕边缘，悬停不能把状态机锁死
-  if (overPill && state !== 'zoom' && state !== 'corner' && state !== 'progress' && state !== 'dock') return null;
+  // 大屏为纯展示态（鼠标穿透、不可操作）：悬停不阻止收起，有操作即回到灵动岛
+  if (overPill && state !== 'zoom' && state !== 'dock') return null;
 
   // 关闭智能：不自动切换，保持手动控制
   if (!smart) return null;
@@ -214,14 +210,14 @@ function decideState(input) {
     return 'strip';
   }
 
-  // 自动放宽为大窗口：**只有显式配置了「自动放大再等多少秒」(zoomIdleSec > 0) 才会自动弹**。
-  // 横幅模式已去掉，所以 zoomIdleSec = 0 时永远维持灵动岛（不再自动弹大窗口打扰授课）。
-  const zoomIdleMs = Math.max(0, zoomIdleSec) * 1000;
-  if (zoomIdleSec > 0 && zoomAllowed && !zoomCooldown && idleMs >= Math.max(expandIdleSec * 1000, zoomIdleMs)) {
+  // 自动放大为大窗口：**只有把「闲置多少秒后自动放大」设成 > 0 才会自动弹**
+  //（原「自动放大门槛」项已删：这一个值同时是开关与时长，默认 0 = 永不自动弹）。
+  const idleSec = Math.max(0, Number(expandIdleSec) || 0);
+  if (idleSec > 0 && zoomAllowed && !zoomCooldown && idleMs >= idleSec * 1000) {
     return 'zoom';
   }
   // 已经在大屏且开了自动放大：继续闲置就保持大屏，不要抖回细条
-  if (zoomIdleSec > 0 && state === 'zoom' && idleMs >= zoomIdleMs) return 'zoom';
+  if (idleSec > 0 && state === 'zoom' && idleMs >= idleSec * 1000) return 'zoom';
   return 'strip';
 }
 
@@ -232,7 +228,9 @@ class Island {
     this.state = 'strip'; // 默认窗口 = 灵动岛（横幅模式已去掉；闲置逻辑会按设置自己放大）
     this.currentOpacity = 0.9;
     this.notifySize = null;   // 通知展示框自适应尺寸（渲染器按内容测量上报）
-    this.stripSize = null;    // 细条/横幅左右两瓣实测宽度（同上），窗口宽度据此自适应
+    this.stripSize = null;    // 细条左右两瓣实测宽度 + 行内间距（渲染层上报）
+    this.fitW = 0;            // 细条采纳的「两瓣额度」（0 = 还没确认过 → 用 PILL.strip.w）
+    this._stripKey = null;    // 上一次读数指纹（对称双确认用）
     this.zoomWidth = 0;       // 倒计时窗口宽度（渲染器按文字内容测量上报；0 = 用默认宽度）
     this.fullscreen = false;  // 最近一次探针检测是否处于全屏遮挡（全屏锁定灵动岛）
     this.lastLi = 0;          // 最近一次探针报告的最后输入时刻（用于检测"有操作"）
@@ -252,7 +250,6 @@ class Island {
     this.lastAutoSwitch = 0;  // 上次自动状态切换时刻（去抖，防止窗口"跳舞"）
     this.lastOverPill = false; // overPill 滞回记忆（光标在边界抖动时不反复切换）
     this.holdUntil = 0;       // 手动操作保持期截止时间（毫秒时间戳）
-    this.expandedAt = 0;      // 最近一次进入横幅（expanded）的时刻（自动弹大屏从横幅展开后计时）
     this.gestureAt = 0;       // 上次拖放手势时刻（防触摸屏松手误触）
     this.capturing = false;   // 截屏防重入（防止并发截屏导致卡顿）
     this.lastBrightness = 0.5; // 最近一次背景亮度（0-1，文字颜色适配用）
@@ -328,7 +325,17 @@ class Island {
   /** 天气载荷（延迟 require：weather 也会读 settings，避免加载期循环依赖；异常不让状态推送整体挂掉） */
   weatherPayload() {
     try {
-      return require('./weather').snapshotForIsland();
+      const w = require('./weather').snapshotForIsland();
+      if (!w) return w;
+      // 带上"盖板是否开着"：盖板开着 → 天气归盖板；没开 → 渲染层把它画到大窗口里。
+      // （否则不开传感器避让时，天气就哪儿都没有了。）
+      let coverOn = false;
+      try {
+        coverOn = !!this.notchSpec().on;
+      } catch (e) {
+        coverOn = false;
+      }
+      return { ...w, coverOn };
     } catch (e) {
       return null;
     }
@@ -572,7 +579,31 @@ class Island {
       //   · 天气 chip **不在** .nb-r 里（它是独立槽位），只量两瓣会漏掉它 → 细条偏窄；
       //   · 宽度由渲染层异步上报，与当帧渲染差一拍 → 过渡瞬间内容会滑进禁区带（被盖板压住）。
       //   所以先退回固定公式。要做自适应得先解决这两点（见 PRINCIPLES / 待办）。
-      return { w: s.w + Math.round(spec.zone.w) + spec.slotLeft + spec.slotRight + wx, h: Math.max(s.h, zoneDepth) };
+      // ⚠️ 2026-09-26 第三次尝试（方案 A：下限 = 内容宽）**仍然失败，原因已定位**：
+      //   [.nb-l 左瓣][.nb-gap][.nb-r 右瓣] 的结构没问题，两瓣测量也对（--diag-split 实测
+      //   36/41 与真实内容吻合）。真正的病是**测量滞后于内容**：收窄的那一帧读到
+      //   「左瓣 34 / 右瓣 0」（内容还没渲染出来）→ body 被压到下限 80 → 宽度 193 →
+      //   内容随后出现就溢出滑进禁区带（T29 越界 s-num@175，禁区 135~222）= 被盖板压住。
+      //
+      // 要做成，必须让宽度**只增不减**，或者要求"两次连续测量一致"才允许收窄 ——
+      // 绝不能用单次测量直接缩窗口。在此之前保持固定公式（宁可留空白，也不能挡文字）。
+      // ⚠️ 2026-09-26 细条宽度自适应：**四次尝试均失败，已停手**。记录清楚，别再盲试：
+      //   失败 1：以为测量口径漏了天气 chip（其实那会儿天气还在细条上）→ 收窄后内容滑进禁区。
+      //   失败 2：以为 DOM 结构不是"左右两瓣" → 用 --diag-split 实测证明结构**就是**
+      //           [.nb-l][.nb-gap 禁区+槽位][.nb-r]，两瓣测量也准（36/41 与内容吻合）。
+      //   失败 3（方案A，下限=内容宽）：**根因定位** —— 测量滞后于内容。收窄那一帧读到
+      //           "左瓣 34 / 右瓣 0"（内容还没绘制），body 被压到下限 → 内容随后出现就
+      //           溢出滑进禁区带（T29 s-num@175，禁区 135~222）= 被盖板压住。
+      //   失败 4（护栏：变大立即生效 / 变小两次一致）：**方向性错误** —— 瞬时的"过大"读数
+      //           会被立即永久采纳，而缩小又要两次确认，于是再也缩不回来（实测宽度 411）。
+      //           护栏必须**对称**：任何变化都要连续两次测量一致才认。
+      //   下一步要做的（下次别再从公式猜）：
+      //     ① setStripSize 改成**对称**双确认（两个方向都要求连续两次一致）；
+      //     ② 渲染层加周期性重测（strip/expanded 下每 ~500ms 一次），否则"第二次确认"永远不来；
+      //     ③ 先写断言再改公式：固定一组已知内容，断言 行宽 === 左瓣+空隙+右瓣，且内容不出禁区。
+      // 额度：细条用渲染层实测（内容自适应，见 setStripSize），其它状态用各自的固定基准
+      const fitE = state === 'strip' && this.fitW > 0 ? this.fitW : s.w;
+      return { w: fitE + Math.round(spec.zone.w) + spec.slotLeft + spec.slotRight + wx, h: Math.max(s.h, zoneDepth) };
     }
     // below：上半截留给传感器（撑高，含额外空隙），内容在下方保留原本高度
     // ⚠️ 这里**不能**用细条实测宽度：这条分支服务的是横幅/大窗口/通知，
@@ -648,26 +679,62 @@ class Island {
   }
 
   /** 倒计时窗口宽度随文字内容调整：渲染器测量后上报 */
-  /** 细条/横幅：左右两瓣的实测宽度（渲染器上报）。
-      窗口宽度 = 左瓣 + 右瓣（再叠加盖板禁区与槽位），**不再用写死的"本体 116 + 天气槽 88"** ——
-      否则一侧内容少时，居中布局会在两侧各留一块等宽空白（"某一侧空白过大"）。 */
-  setStripSize(l, r) {
+  /** 细条宽度自适应（第五次尝试，2026-09-26 成功）：渲染层上报两瓣内容宽 + 行内间距。
+      窗口宽 = 额度 + 禁区 + 槽位（禁区/槽位由盖板配置决定，与内容无关）；
+      额度 = 左瓣 + 右瓣 + 2×行内间距（`.s-row { gap: 5px }`）—— 实测得出，所以内容少时窗口自动收窄，
+      两侧不再各留一块等宽空白（(固定额度 116 − 内容宽)/2）。
+      ⚠️ 采纳规则必须**对称双确认**：任何方向的改动都要连续两次完全一致的读数。
+      单次读数可能是"内容还没绘制"的那一帧（实测读到过"左瓣 34 / 右瓣 0"），据此收窄 →
+      内容随后出现就溢出滑进盖板禁区带（被盖板压住）。上一版护栏"变大立即生效、变小两次确认"
+      会让瞬时的过大读数被永久采纳、再也缩不回来（实测锁死在 411）—— 方向必须对称。
+      "第二次读数"由渲染层的 500ms 周期重测提供，否则永远等不到确认。 */
+  setStripSize(l, r, gap, guarded) {
     const nl = Math.max(0, Math.round(Number(l) || 0));
     const nr = Math.max(0, Math.round(Number(r) || 0));
-    if (nl === 0 && nr === 0) return; // 还没量出来，别把窗口压没
-    const cur = this.stripSize;
-    if (cur && cur.l === nl && cur.r === nr) return;
-    this.stripSize = { l: nl, r: nr };
-    // 只在细条/横幅两态生效（通知/大窗口/计时坞的几何一律不动）
-    if ((this.state === 'strip' || this.state === 'expanded') && this.win && !this.win.isDestroyed()) {
-      try {
-        const target = this.computeBounds(this.state, this.islandDisplay());
-        if (target && (target.w !== this.win.getBounds().width || target.h !== this.win.getBounds().height)) {
-          this.animating = false;
-          this.win.setBounds(target);
-        }
-      } catch (e) { /* ignore */ }
+    const ng = Math.max(0, Math.round(Number(gap) || 0));
+    // 渲染层报告「内容正被兜底裁切」→ 这一帧的宽度不可信：保持当前额度，并要求重新双确认
+    if (guarded) {
+      this._stripKey = null;
+      return;
     }
+    if (nl === 0 && nr === 0) return; // 还没量出来，别把窗口压没
+    const key = nl + '|' + nr + '|' + ng;
+    const confirmed = this._stripKey === key; // 与上一次读数完全一致才算确认
+    this._stripKey = key;
+    this.stripSize = { l: nl, r: nr, gap: ng };
+    if (!confirmed) return; // 第一次读到 → 只记下，等 500ms 后的重测确认，不动几何
+    const next = Math.min(340, Math.max(24, nl + nr + 2 * ng + 2 * STRIP_SIDE_PAD));
+    if (this.fitW === next) return;
+    this.fitW = next;
+    // 只作用于细条（通知 / 大窗口 / 横幅 / 计时坞的几何一律不动）
+    if (this.state !== 'strip' || !this.win || this.win.isDestroyed()) return;
+    try {
+      const target = this.computeBounds('strip', this.islandDisplay());
+      if (target && (target.w !== this.win.getBounds().width || target.h !== this.win.getBounds().height)) {
+        this.animating = false;
+        this.win.setBounds(target);
+        // 宽度变了必须把新几何推给渲染层：渲染层用「窗口几何 + 禁区参数」换算禁区在岛内的位置，
+        // 拿到旧几何会把禁区算偏 —— 实测表现为右瓣被兜底裁切、数字压进禁区带（zone.x 不随 W 变）。
+        // 以前细条宽度恒定，所以这条推送缺失一直没暴露。
+        this.sendState(target);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  /** 盖板按下/抬起 → 渲染层显示与「按灵动岛」相同的反馈（只放大，不发光） */
+  setPressFeedback(on) {
+    this.send('island:press', !!on);
+  }
+
+  /** 只读快照（自检/诊断用）：细条采纳的额度 E 与最近一次实测 */
+  stripFit() {
+    return {
+      E: this.fitW > 0 ? this.fitW : PILL.strip.w,
+      pad: STRIP_SIDE_PAD,
+      l: this.stripSize ? this.stripSize.l : 0,
+      r: this.stripSize ? this.stripSize.r : 0,
+      gap: this.stripSize ? this.stripSize.gap : 0,
+    };
   }
 
   setZoomWidth(w) {
@@ -707,15 +774,6 @@ class Island {
   /** 按状态计算窗口边界（每种状态独立位置配置；通知形态尺寸随内容自适应） */
   computeBounds(state, disp) {
     const wa = disp.workArea;
-    // —— 全屏授课的两个新形态：贴屏幕边缘，不留 PAD（"从角落里长出来"）——
-    if (state === 'corner' || state === 'progress') {
-      const cs = this.cornerSize(state, disp);
-      if (state === 'corner') {
-        // 右上角卡片（内部状态）：右边缘与上边缘都贴住工作区
-        return { x: wa.x + wa.width - cs.w, y: wa.y, width: cs.w, height: cs.h };
-      }
-      return { x: wa.x, y: wa.y, width: cs.w, height: cs.h }; // 顶部进度条：整宽贴顶
-    }
     const s = this.pillSize(state, disp);
     const w = s.w + PAD * 2;
     const h = s.h + PAD * 2;
@@ -744,25 +802,16 @@ class Island {
     return { x, y, width: w, height: h };
   }
 
-  /** 角落卡片 / 顶部进度条的尺寸（DIP） */
-  cornerSize(state, disp) {
-    const wa = disp.workArea;
-    if (state === 'progress') return { w: wa.width, h: Math.max(10, PILL.progress.h) };
-    const s = PILL.corner;
-    return { w: Math.max(140, Math.min(360, s.w)), h: Math.max(48, Math.min(160, s.h)) };
-  }
-
-  /** 全屏授课时的目标形态：'hide' | 'strip' | 'progress'（角落卡片已去掉）
-      （手动「固定显示」不隐藏、「隐藏成灵动岛」只当小条 —— 手动模式优先） */
+  /** 全屏授课时的目标形态：'hide'（彻底隐藏，默认）| 'strip'（保持灵动岛）
+      （手动「固定显示」不隐藏、「隐藏成灵动岛」只当小条 —— 手动模式优先）
+      「右上角卡片」「顶部进度条」两个展示形态已按用户要求删除；旧配置里的这两个值
+      由 settings 的版本链（MIGRATIONS to:2）迁移成 'strip'。 */
   resolveFullscreenState(occluded, mode) {
     const st = settings.load();
     if (!occluded) return 'none';
     if (mode === 'hidden') return 'strip';
     if (mode === 'pinned') return 'strip';
-    const m = st.smart.fullscreenMode;
-    if (m === 'corner' || m === 'progress') return m;
-    if (m === 'strip') return 'strip';
-    return 'hide';
+    return st.smart.fullscreenMode === 'strip' ? 'strip' : 'hide';
   }
 
   /** 全屏授课时的行为设置（配置页显示用） */
@@ -797,25 +846,13 @@ class Island {
     const scale = this.islandDisplay().scaleFactor;
     const hwnd = this.getHwnd();
     const gap = 3; // 外扩像素：让 Win32 锯齿边缘落在 CSS 平滑边缘之外的透明区
-    let x, y, w, h, radius;
-    if (this.state === 'corner' || this.state === 'progress') {
-      // 角落卡片 / 顶部进度条：窗口本身就是卡片（无 PAD），区域直接取整窗矩形，
-      // 圆角（只圆左下角 / 下方两角）由 CSS 负责
-      const b = this.win.getBounds();
-      x = 0;
-      y = 0;
-      w = Math.round(b.width * scale);
-      h = Math.round(b.height * scale);
-      radius = 1;
-    } else {
-      const s = this.pillSize(this.state, this.islandDisplay());
-      // CSS border-radius 是「半径」；CreateRoundRectRgn 的第 5/6 参数是「椭圆宽度」（= 2×半径），必须翻倍
-      radius = (REGION_RADIUS[this.state] || 24) * 2;
-      x = Math.round((PAD - gap) * scale);
-      y = Math.round((PAD - gap) * scale);
-      w = Math.round((s.w + gap * 2) * scale);
-      h = Math.round((s.h + gap * 2) * scale);
-    }
+    const s = this.pillSize(this.state, this.islandDisplay());
+    // CSS border-radius 是「半径」；CreateRoundRectRgn 的第 5/6 参数是「椭圆宽度」（= 2×半径），必须翻倍
+    const radius = (REGION_RADIUS[this.state] || 24) * 2;
+    const x = Math.round((PAD - gap) * scale);
+    const y = Math.round((PAD - gap) * scale);
+    const w = Math.round((s.w + gap * 2) * scale);
+    const h = Math.round((s.h + gap * 2) * scale);
     // 尺寸/状态没变且上次已生效：跳过（避免每次动画结束都写一次命令文件 + SetWindowRgn）
     if (hwnd && this.probe && this.probe.setRegion(hwnd, x, y, w, h, Math.round(radius * scale))) {
       this.regionApplied = true;
@@ -826,12 +863,8 @@ class Island {
     // 探针未就绪或写入失败：标记未应用，tick 会持续重试；同时回退 Electron setShape
     this.regionApplied = false;
     try {
-      if (this.state === 'corner' || this.state === 'progress') {
-        this.win.setShape([{ x: 0, y: 0, width: Math.round(w / scale), height: Math.round(h / scale) }]);
-      } else {
-        const s = this.pillSize(this.state, this.islandDisplay());
-        this.win.setShape([{ x: PAD, y: PAD, width: s.w, height: s.h }]);
-      }
+      const s = this.pillSize(this.state, this.islandDisplay());
+      this.win.setShape([{ x: PAD, y: PAD, width: s.w, height: s.h }]);
     } catch (e) {
       /* ignore */
     }
@@ -846,10 +879,7 @@ class Island {
     const hwnd = this.getHwnd();
     const gap = 3;
     let key;
-    if (this.state === 'progress') {
-      const b = this.win.getBounds();
-      key = `${hwnd}|0|0|${Math.round(b.width * scale)}|${Math.round(b.height * scale)}|${Math.round(1 * scale)}`;
-    } else {
+    {
       const s = this.pillSize(this.state, this.islandDisplay());
       const radius = (REGION_RADIUS[this.state] || 24) * 2;
       key = `${hwnd}|${Math.round((PAD - gap) * scale)}|${Math.round((PAD - gap) * scale)}|${Math.round((s.w + gap * 2) * scale)}|${Math.round((s.h + gap * 2) * scale)}|${Math.round(radius * scale)}`;
@@ -995,7 +1025,8 @@ class Island {
     const opacity = st.ui.opacity[state] ?? 0.92;
     const target = this.computeBounds(state, this.islandDisplay());
     this.state = state;
-    if (state === 'expanded') this.expandedAt = Date.now(); // 横幅展开时刻（大屏计时起点）
+    // 离开细条时清掉「双确认」指纹：回来要重新连读两次，避免拿旧读数直接采纳
+    if (state !== 'strip') this._stripKey = null;
     this.currentOpacity = opacity;
     this.animateBounds(target);
     this.applyRegion();
@@ -1004,20 +1035,10 @@ class Island {
     this.sendState(target);
     // 盖板内容联动：大窗口展开时盖板不显示任何内容（避免与大窗口里的信息重复/打架）
     this.pushCoverContent(true);
-    // 角落卡片 / 顶部进度条（全屏授课的纯展示形态）、大窗口与完全透明的灵动岛：
-    // 不拦截鼠标/触摸（穿透）。大窗口是纯展示态 —— 底部那排「固定/设置/菜单/收起」按钮
-    // 按用户要求已移除，所以它不再需要接收点击（穿透后也不会挡住桌面操作）。
-    const streaming = state === 'corner' || state === 'progress';
-    const ignore = state === 'zoom' || streaming || (state === 'strip' && opacity <= 0.01);
+    // 大窗口与完全透明的灵动岛不拦截鼠标/触摸（穿透）。大窗口是纯展示态 ——
+    // 底部那排「固定/设置/菜单/收起」按钮按用户要求已移除，所以它不再需要接收点击。
+    const ignore = state === 'zoom' || (state === 'strip' && opacity <= 0.01);
     if (this.win && !this.win.isDestroyed()) this.win.setIgnoreMouseEvents(ignore);
-    // 全屏授课的展示形态同时打开 Win32 穿透（连任务栏手势都不拦）
-    if (streaming && this.win && !this.win.isDestroyed()) {
-      const ptHwnd = this.getHwnd();
-      if (ptHwnd && this.probe && !this.mousePT) {
-        this.mousePT = true;
-        this.probe.setMousePassthrough(ptHwnd, true);
-      }
-    }
     // 通知形态：优先级最高——即使全屏（穿透开启中）也要立即可交互，关闭 WS_EX_TRANSPARENT
     if (state === 'notify' && this.mousePT) {
       this.mousePT = false;
@@ -1216,6 +1237,8 @@ class Island {
         cycleSec: st.smart.cycleSec,
         classical: !!st.ui.classical,
         stripStyle: st.ui.stripStyle === 'glass' ? 'glass' : 'black',
+        // 计时坞游标尺的惯性手感（渲染层按它选一组「初速上限 / 减速度」）
+        timerInertia: ['sharp', 'standard', 'soft'].includes(st.ui.timerInertia) ? st.ui.timerInertia : 'standard',
         notifyShake: st.smart.notifyShake !== false,
         // 玻璃高光强度（%）：CPU/GPU 两条链路与 CSS 表面光影统一按此系数缩放
         glassGlow: typeof st.ui.glassGlow === 'number' ? st.ui.glassGlow : 100,
@@ -1231,8 +1254,7 @@ class Island {
         glBottomShade: typeof st.ui.glBottomShade === 'number' ? st.ui.glBottomShade : 100,
         glRefract: typeof st.ui.glRefract === 'number' ? st.ui.glRefract : 100,
         glBand: typeof st.ui.glBand === 'number' ? st.ui.glBand : 100,
-        // 全屏授课：顶部进度条总量（天）与当前行为（渲染层显示用）
-        progressTotalDays: typeof st.smart.progressTotalDays === 'number' ? st.smart.progressTotalDays : 365,
+        // 全屏授课的当前行为（渲染层显示用）
         fullscreenMode: st.smart.fullscreenMode || 'hide',
      },
     });
@@ -1288,7 +1310,7 @@ class Island {
     this.fullscreen = occluded; // 全屏锁定：不允许横幅/倒计时窗口（仅灵动岛）
 
     // —— 全屏授课行为：由 settings.smart.fullscreenMode 决定
-    //    'hide' 彻底隐藏（默认）| 'progress' 顶部进度条 | 'strip' 保持灵动岛小条
+    //    'hide' 彻底隐藏（默认）| 'strip' 保持灵动岛小条
     //    手动「固定显示」时不隐藏（保持原行为）；手动「隐藏成灵动岛」时只当小条
     this.fullscreenState = this.resolveFullscreenState(occluded, mode);
 
@@ -1385,7 +1407,6 @@ class Island {
       smart: s.enabled,
       hideOnMaximized: s.hideOnMaximized !== false,
       expandIdleSec: s.expandIdleSec,
-      zoomIdleSec: s.zoomIdleSec || 0,
       zoomAllowed: this.zoomAllowed(),
       zoomCooldown: Date.now() < this.zoomCooldownUntil,
       holding,
@@ -1395,7 +1416,6 @@ class Island {
       // 计时坞只在长按进入的交互期（创建页 / 操作页）保持显示；不常驻、不持久化
       dockInteractive: !!(this.dockEdit || this.dockMenu),
       fullscreenState: this.fullscreenState === 'hide' || this.fullscreenState === 'none' ? 'strip' : this.fullscreenState,
-      expandedSinceMs: this.state === 'expanded' ? Math.max(0, Date.now() - this.expandedAt) : 0,
     });
     // 盖板只在灵动岛常态（且未计时）时显示天气/文字，其余一律空白；
     // 状态切换时 setState 已经推过，这里不需要再按 tick 推。
@@ -1416,8 +1436,20 @@ class Island {
       this.setState(next);
     }
 
+    // —— 细条宽度对账（自适应专用）——
+    // 采纳新额度时若正好有 animateBounds 在跑，动画帧会把窗口写回**上一个目标宽度**，
+    // 于是窗口宽与当前额度长期不一致（实测差 13px）→ 用户看到两侧留白忽多忽少。
+    // 这里每 tick 纠一次；只对账细条（其它形态尺寸各有来源），且不走动画（宽度微调不该有动画）。
+    if (this.state === 'strip' && this.fitW > 0 && !this.dragging && !this.animating && this.win && !this.win.isDestroyed()) {
+      const wantB = this.computeBounds('strip', this.islandDisplay());
+      const curB = this.win.getBounds();
+      if (wantB && (Math.abs(curB.width - wantB.width) > 1 || Math.abs(curB.height - wantB.height) > 1)) {
+        this.applyBoundsNow(wantB);
+      }
+    }
+
     // —— 全屏遮挡时鼠标穿透：灵动岛不挡全屏应用的触摸/点击（全屏无条件锁定，不可唤起） ——
-    const wantPT = !!occluded && (this.state === 'strip' || this.state === 'corner' || this.state === 'progress');
+    const wantPT = !!occluded && this.state === 'strip';
     if (wantPT !== this.mousePT) {
       this.mousePT = wantPT;
       const ptHwnd = this.getHwnd();
@@ -1689,14 +1721,14 @@ class Island {
       case 'dockPick':
         // 创建页刻度变化：记下选中的分钟数 —— 盖板左边要显示"选中的时间"，
         // 而选中的值掌握在渲染层（刻度控件）手里，所以由它上报。
-        this.dockPickSeconds = Math.max(5, parseInt(String(a.seconds), 10) || 900);
+        // 刻度止于 6 小时，更长的时长由创建页的「自定义」输入给出 → 上限放到 24 小时
+        this.dockPickSeconds = Math.max(5, Math.min(24 * 3600, parseInt(String(a.seconds), 10) || 900));
         this.pushCoverContent(true);
         break;
       case 'timerStart': {
-        // 刻度选好时长 → 开始倒计时，并收起计时坞（回到灵动岛）
-        // 时长由游标尺给出（它可以无限往左拖），这里只做一个防呆上限，不再卡 24 小时
-        // 最短 5 秒（游标尺支持秒级），上限只做防呆
-        const ms = Math.max(5 * 1000, Math.min(365 * 24 * 3600 * 1000, parseInt(a.ms, 10) || 0));
+        // 刻度选好时长（或在创建页「自定义」里输入）→ 开始倒计时，并收起计时坞（回到灵动岛）
+        // 最短 5 秒（游标尺支持秒级）；上限 24 小时，与创建页「自定义」输入的上限一致
+        const ms = Math.max(5 * 1000, Math.min(24 * 3600 * 1000, parseInt(a.ms, 10) || 0));
         settings.update({ timer: { active: true, endsAt: Date.now() + ms, totalMs: ms, pausedLeftMs: null, label: String(a.label || '') } });
         this.dockEdit = false;
         this.dockMenu = false;
@@ -2191,7 +2223,6 @@ class Island {
     const st = settings.load();
     const disp = this.positionDisplay();
     const bounds = this.computeBounds('strip', disp); // 启动即灵动岛（横幅模式已去掉）
-    this.expandedAt = Date.now(); // 窗口以横幅形态创建：大屏计时从此刻起
     this.win = require('./quiet').quiet(new BrowserWindow({
       ...bounds,
       show: false,

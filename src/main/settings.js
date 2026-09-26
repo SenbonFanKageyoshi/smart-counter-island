@@ -35,7 +35,8 @@ function defaultPosition() {
 }
 
 const DEFAULTS = {
-  version: 3,
+  // 配置结构版本（见 SCHEMA_VERSION / MIGRATIONS）；旧版的 version 字段全仓无人读，已废弃
+  schemaVersion: 1,
   events: [defaultEvent()],
   ui: {
     // 玻璃效果: 'auto'(真实截屏模糊,失败自动回退) | 'fake'(纯 CSS 模拟) | 'off'(关闭,黑底白字)
@@ -53,7 +54,7 @@ const DEFAULTS = {
     // CPU 链路用 smart.bgRefreshSec（秒）控制刷新，两条链路互不影响
     gpuGlassFps: 30,
     // GPU 液态玻璃的观感微调（百分比，100 = 默认；只作用于「液态玻璃（GPU 加速）」着色器）
-    glEdgeGlow: 100,      // 边缘高光强度
+    glEdgeGlow: 5,        // 边缘高光强度（%，100 = 原来的默认）：实测 100 太亮，默认改成 5
     glBottomShade: 100,   // 底部阴影强度
     glRefract: 100,       // 边缘折射强度（最大位移量）
     glBand: 100,          // 边缘折射范围（折射带宽）
@@ -120,7 +121,9 @@ const DEFAULTS = {
     customPos: null, // 旧版拖动位置（仅迁移用）
     // 细条样式：'black' 黑底白字（无效果） | 'glass' 跟随玻璃效果
     stripStyle: 'black',
-    opacity: { strip: 0.6, expanded: 0.9, zoom: 0.96, corner: 0.9, progress: 0.55 },
+    // 计时坞游标尺松手后的惯性手感：'sharp' 急促 | 'standard' 标准（默认） | 'soft' 平缓
+    timerInertia: 'standard',
+    opacity: { strip: 0.6, expanded: 0.9, zoom: 0.96 },
     alwaysOnTop: true,
     showSeconds: true,
     // 灵动岛日期估算方式：'ceil' 向上取整（不足一天算一天） | 'round' 四舍五入 | 'floor' 向下取整
@@ -135,16 +138,15 @@ const DEFAULTS = {
   },
   smart: {
     enabled: true,          // 总开关（智能隐藏/透明度/放大）
-    // 全屏授课时（真全屏，不含窗口最大化）的行为：
+    // 全屏授课时（真全屏，不含窗口最大化）的行为：'hide' 彻底隐藏 | 'strip' 保持灵动岛
+    // （「顶部进度条」「右上角卡片」两个展示形态已按用户要求删除）
     fullscreenMode: 'hide',
-    progressTotalDays: 365, // 进度条总量（天）：填充比例 = (总量 - 剩余天数) / 总量
     hideOnMaximized: true,  // 前台窗口最大化时保持细条（不展开遮挡）
-    expandIdleSec: 4,       // 无操作多少秒后放宽（横幅模式已去掉：直接进大窗口）
-    // 自动弹出大窗口的额外门槛，**默认 0 = 不自动弹**。
-    // 理由：大窗口会盖住桌面内容，而且它是鼠标穿透的（点不到、也关不掉），
+    // 闲置多少秒后自动放大到大窗口：**这一个值同时是开关与时长**（0 = 不自动放大，默认）。
+    // 原「自动放大门槛」zoomIdleSec 已按用户要求删除（旧配置由版本链 to:3 合并过来）。
+    // 默认 0 的理由：大窗口会盖住桌面内容、而且是鼠标穿透的（点不到也关不掉），
     // "只要十几秒不碰键鼠就自己冒出来"在授课场景里是纯打扰。
-    // 想要自动弹出的用户可显式设成 > 0（届时闲置到 max(expandIdleSec, 本值) 才进大窗口）。
-    zoomIdleSec: 0,
+    expandIdleSec: 0,
     zoomEnabled: true,      // 允许大屏（手动/拖拽/自动）
     cycleEnabled: false,    // 放大时轮播多个事件
     cycleSec: 6,
@@ -305,6 +307,199 @@ function migrateFullscreenMode(diskSmart, cacheSmart) {
   return true;
 }
 
+/**
+ * 当前配置结构版本（落盘键 schemaVersion）。
+ * 只要改动 settings 的结构（新增键 / 改名 / 废弃键），就 +1 并在 MIGRATIONS 末尾追加一步。
+ */
+const SCHEMA_VERSION = 3;
+
+/**
+ * 版本链：把磁盘上的旧结构升到当前结构。
+ * 每一步 { to, run(disk, cache) }：
+ *   - 判据只看 disk（"这个旧键在磁盘上真的写过吗"），改动落在 cache（deepMerge 结果）上；
+ *   - run 返回 cache 是否真的被改动；每一级**必须幂等**（同一份数据跑两遍结果一致），
+ *     否则每次启动都会改写用户配置。
+ * 磁盘上没有 schemaVersion 的配置（v3.1.0 及以前）一律当作 0 → 完整跑一遍链，
+ * 与改造前"无条件跑全部散装迁移"的结果逐字节等价。
+ */
+const MIGRATIONS = [
+  {
+    to: 1,
+    run(disk, cache) {
+      let changed = false;
+      // —— 全屏行为迁移：旧版 hideOnFullscreen(布尔) → fullscreenMode(枚举) ——
+      // 仅当磁盘上确实写着旧键、且没有新键时才迁移（默认值里的 fullscreenMode 不能当成"已设置"）
+      if (cache.smart && migrateFullscreenMode(disk.smart, cache.smart)) changed = true;
+      if (cache.smart && cache.smart.hideOnFullscreen != null) {
+        delete cache.smart.hideOnFullscreen;
+        changed = true;
+      }
+      // —— 废弃键清理 ——
+      // ① version（旧版版本字段，全仓无人读，已由 schemaVersion 取代 —— 不删掉的话它会被 deepMerge 原样保留）
+      // ② weather.announcePet（天气语音/桌宠播报已按需求去掉）③ pet.voice（更早版本的语音合成残留，无人读取）
+      if (cache.version != null) {
+        delete cache.version;
+        changed = true;
+      }
+      if (cache.weather && cache.weather.announcePet != null) {
+        delete cache.weather.announcePet;
+        changed = true;
+      }
+      if (cache.pet && cache.pet.voice != null) {
+        delete cache.pet.voice;
+        changed = true;
+      }
+      // 桌宠未开发完成、暂停使用：强制关掉（页面已灰置，这里保证它真的不跑）
+      if (cache.pet && cache.pet.enabled !== false) {
+        cache.pet.enabled = false;
+        changed = true;
+      }
+      // —— 「计时坞」不再是可常驻的手动模式 ——
+      // 之前长按灵动岛进入坞时会写成 manual.mode = 'dock' 并被持久化，
+      // 于是以后每次启动都直接停在计时坞（用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。
+      // 现在计时坞只在长按交互期间显示（由 dockEdit/dockMenu 驱动），所以把遗留值迁回自动。
+      if (cache.manual && cache.manual.mode === 'dock') {
+        cache.manual.mode = 'auto';
+        changed = true;
+      }
+      // —— 旧版配置迁移 ——
+      // v3 起默认窗口固定为放大版（不可更改），旧 defaultState 字段不再使用
+      if (cache.ui.defaultState != null) {
+        delete cache.ui.defaultState;
+        changed = true;
+      }
+      if (!cache.ui.positions) {
+        cache.ui.positions = { strip: defaultPosition(), expanded: defaultPosition(), zoom: defaultPosition() };
+        changed = true;
+      }
+      // v2 的 bar 状态 → expanded（放大版灵动岛）
+      // 注：DEFAULTS 已含 positions.expanded，判据里的 !expanded 恒假 → 实际不可达；原样保留
+      if (cache.ui.positions.bar && !cache.ui.positions.expanded) {
+        cache.ui.positions.expanded = cache.ui.positions.bar;
+        changed = true;
+      }
+      delete cache.ui.positions.bar;
+      // 已移除的 compact（灵动岛）位置 → expanded（放大版灵动岛）
+      if (cache.ui.positions.compact) {
+        if (!cache.ui.positions.expanded || cache.ui.positions.expanded.mode === 'top-center') {
+          cache.ui.positions.expanded = cache.ui.positions.compact;
+        }
+        delete cache.ui.positions.compact;
+        changed = true;
+      }
+      if (cache.ui.customPos) {
+        const cp = cache.ui.customPos;
+        if (cache.ui.positions.expanded && cache.ui.positions.expanded.mode !== 'custom') {
+          cache.ui.positions.expanded = { mode: 'custom', x: cp.x, y: cp.y };
+          changed = true;
+        }
+        cache.ui.customPos = null;
+      }
+      if (cache.ui.position && cache.ui.position !== 'top-center') {
+        for (const key of Object.keys(cache.ui.positions)) {
+          const p = cache.ui.positions[key];
+          if (!p || (p.mode === 'top-center' && p.x == null)) {
+            cache.ui.positions[key] = { mode: cache.ui.position, x: null, y: null };
+            changed = true;
+          }
+        }
+      }
+      // v2 透明度 bar → expanded；已移除的 compact 透明度 → expanded
+      // 注：同 positions，DEFAULTS 补全后 expanded == null 恒假 → 这两条实际不可达；原样保留
+      if (cache.ui.opacity && cache.ui.opacity.bar != null && cache.ui.opacity.expanded == null) {
+        cache.ui.opacity.expanded = cache.ui.opacity.bar;
+        changed = true;
+      }
+      delete cache.ui.opacity.bar;
+      if (cache.ui.opacity && cache.ui.opacity.compact != null && cache.ui.opacity.expanded == null) {
+        cache.ui.opacity.expanded = cache.ui.opacity.compact;
+        changed = true;
+      }
+      delete cache.ui.opacity.compact;
+      // —— 时间表结构迁移：旧版（单周 7 天带 name）→ 新版（多周循环，每天仅 periods）——
+      if (cache.schedule) {
+        const oldWeeks = cache.schedule.weeks;
+        if (Array.isArray(oldWeeks) && oldWeeks.length === 7 && oldWeeks[0] && oldWeeks[0].name != null) {
+          cache.schedule.weeks = [oldWeeks.map((d) => ({ periods: Array.isArray(d.periods) ? d.periods.map((p) => ({ start: p.start, end: p.end })) : [] }))];
+          if (cache.schedule.cycleWeeks == null) cache.schedule.cycleWeeks = 1;
+          if (cache.schedule.restWeek == null) cache.schedule.restWeek = 0;
+          changed = true;
+        }
+        // 旧版课程名 label 移除（仅保留 start/end）
+        for (const week of cache.schedule.weeks || []) {
+          for (const day of week || []) {
+            if (Array.isArray(day.periods)) {
+              day.periods = day.periods.map((p) => ({ start: p && p.start, end: p && p.end }));
+            }
+          }
+        }
+      }
+      return changed;
+    },
+  },
+  {
+    to: 2,
+    run(disk, cache) {
+      let changed = false;
+      // 「顶部进度条」（progress）与「右上角卡片」（corner）两个全屏展示形态已删除：
+      //   · 旧配置里的 fullscreenMode 落到「保持灵动岛」；
+      //   · 进度条专用参数、以及这两个形态的透明度键一并废弃。
+      if (cache.smart && (cache.smart.fullscreenMode === 'corner' || cache.smart.fullscreenMode === 'progress')) {
+        cache.smart.fullscreenMode = 'strip';
+        changed = true;
+      }
+      if (cache.smart && cache.smart.progressTotalDays != null) {
+        delete cache.smart.progressTotalDays;
+        changed = true;
+      }
+      if (cache.smart && cache.smart.fullscreenState != null) {
+        delete cache.smart.fullscreenState;
+        changed = true;
+      }
+      if (cache.ui && cache.ui.opacity) {
+        if (cache.ui.opacity.corner != null) {
+          delete cache.ui.opacity.corner;
+          changed = true;
+        }
+        if (cache.ui.opacity.progress != null) {
+          delete cache.ui.opacity.progress;
+          changed = true;
+        }
+      }
+      return changed;
+    },
+  },
+  {
+    to: 3,
+    run(disk, cache) {
+      let changed = false;
+      // 「自动放大门槛」(smart.zoomIdleSec) 已删除，与「闲置多少秒后放大」(expandIdleSec) 合并成一个值。
+      // 旧配置启用过自动放大（zoomIdleSec > 0）时把等待时长并过去（取较大值，
+      // 与原逻辑 max(expandIdleSec, zoomIdleSec) 等价）；没启用过就只是删键，行为不变。
+      if (cache.smart && cache.smart.zoomIdleSec != null) {
+        const oldZoom = Math.max(0, Number(cache.smart.zoomIdleSec) || 0);
+        const oldExpand = Math.max(0, Number(cache.smart.expandIdleSec) || 0);
+        delete cache.smart.zoomIdleSec;
+        if (oldZoom > 0) cache.smart.expandIdleSec = Math.max(oldExpand, oldZoom);
+        changed = true;
+      }
+      return changed;
+    },
+  },
+];
+
+/** 纯函数：按版本链把 cache 升到 SCHEMA_VERSION；返回 cache 是否被改动（便于单测） */
+function applyMigrations(disk, cache) {
+  const from = Number(disk && disk.schemaVersion) || 0; // 老配置没有这个键 → 0
+  // 磁盘版本比代码新（装了新版又换回旧版）→ 整链跳过：既不迁移，也不回写
+  if (from >= SCHEMA_VERSION) return false;
+  for (const step of MIGRATIONS) {
+    if (step.to > from && step.to <= SCHEMA_VERSION) step.run(disk, cache);
+  }
+  cache.schemaVersion = SCHEMA_VERSION;
+  return true;
+}
+
 /** 读取全部设置（含默认值） */
 function load() {
   if (cache) return cache;
@@ -318,47 +513,9 @@ function load() {
     disk = {};
   }
   cache = deepMerge(DEFAULTS, disk);
-  let migrated = false;
-  // —— 全屏行为迁移：旧版 hideOnFullscreen(布尔) → fullscreenMode(枚举) ——
-  // 仅当磁盘上确实写着旧键、且没有新键时才迁移（默认值里的 fullscreenMode 不能当成"已设置"）
-  if (cache.smart && migrateFullscreenMode(disk.smart, cache.smart)) migrated = true;
-  if (cache.smart && cache.smart.hideOnFullscreen != null) {
-    delete cache.smart.hideOnFullscreen;
-    migrated = true;
-  }
-  // 新形态的透明度默认值（旧配置没有这两个键）
-  if (cache.ui && cache.ui.opacity) {
-    if (cache.ui.opacity.corner == null) cache.ui.opacity.corner = 0.9;
-    if (cache.ui.opacity.progress == null) cache.ui.opacity.progress = 0.55;
-  }
-  // —— 废弃键清理 ——
-  // ① weather.announcePet（天气语音/桌宠播报已按需求去掉）② pet.voice（更早版本的语音合成残留，无人读取）
-  if (cache.weather && cache.weather.announcePet != null) {
-    delete cache.weather.announcePet;
-    migrated = true;
-  }
-  if (cache.pet && cache.pet.voice != null) {
-    delete cache.pet.voice;
-    migrated = true;
-  }
-  // —— 角落卡片已去掉：旧配置里的 fullscreenState='corner' 迁移到 'strip' ——
-  if (cache.smart && cache.smart.fullscreenState === 'corner') {
-    cache.smart.fullscreenState = 'strip';
-    migrated = true;
-  }
-  // 桌宠未开发完成、暂停使用：强制关掉（页面已灰置，这里保证它真的不跑）
-  if (cache.pet && cache.pet.enabled !== false) {
-    cache.pet.enabled = false;
-    migrated = true;
-  }
-  // —— 「计时坞」不再是可常驻的手动模式 ——
-  // 之前长按灵动岛进入坞时会写成 manual.mode = 'dock' 并被持久化，
-  // 于是以后每次启动都直接停在计时坞（用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。
-  // 现在计时坞只在长按交互期间显示（由 dockEdit/dockMenu 驱动），所以把遗留值迁回自动。
-  if (cache.manual && cache.manual.mode === 'dock') {
-    cache.manual.mode = 'auto';
-    migrated = true;
-  }
+  // ① 结构迁移：版本链（一次性；磁盘上没有 schemaVersion = 0 → 完整跑一遍，与改造前等价）
+  let migrated = applyMigrations(disk, cache);
+  // ② 数据兜底/修复：与结构版本无关，每次加载都必须做（防坏数据）
   // 事件列表**允许为空**：用户在配置页删光之后就是真正的空态
   // （渲染层已有「暂无倒计时事件（托盘图标 → 配置）」提示，托盘也留着入口）。
   // 原先这里无条件补一条默认事件，导致用户删掉最后一个事件后，下次启动它又自己回来
@@ -378,75 +535,8 @@ function load() {
       return e;
     });
   }
-  // —— 旧版配置迁移 ——
-  // v3 起默认窗口固定为放大版（不可更改），旧 defaultState 字段不再使用
-  if (cache.ui.defaultState != null) {
-    delete cache.ui.defaultState;
-    migrated = true;
-  }
-  if (!cache.ui.positions) {
-    cache.ui.positions = { strip: defaultPosition(), expanded: defaultPosition(), zoom: defaultPosition() };
-    migrated = true;
-  }
-  // v2 的 bar 状态 → expanded（放大版灵动岛）
-  if (cache.ui.positions.bar && !cache.ui.positions.expanded) {
-    cache.ui.positions.expanded = cache.ui.positions.bar;
-    migrated = true;
-  }
-  delete cache.ui.positions.bar;
-  // 已移除的 compact（灵动岛）位置 → expanded（放大版灵动岛）
-  if (cache.ui.positions.compact) {
-    if (!cache.ui.positions.expanded || cache.ui.positions.expanded.mode === 'top-center') {
-      cache.ui.positions.expanded = cache.ui.positions.compact;
-    }
-    delete cache.ui.positions.compact;
-    migrated = true;
-  }
-  if (cache.ui.customPos) {
-    const cp = cache.ui.customPos;
-    if (cache.ui.positions.expanded && cache.ui.positions.expanded.mode !== 'custom') {
-      cache.ui.positions.expanded = { mode: 'custom', x: cp.x, y: cp.y };
-      migrated = true;
-    }
-    cache.ui.customPos = null;
-  }
-  if (cache.ui.position && cache.ui.position !== 'top-center') {
-    for (const key of Object.keys(cache.ui.positions)) {
-      const p = cache.ui.positions[key];
-      if (!p || (p.mode === 'top-center' && p.x == null)) {
-        cache.ui.positions[key] = { mode: cache.ui.position, x: null, y: null };
-        migrated = true;
-      }
-    }
-  }
-  // v2 透明度 bar → expanded；已移除的 compact 透明度 → expanded
-  if (cache.ui.opacity && cache.ui.opacity.bar != null && cache.ui.opacity.expanded == null) {
-    cache.ui.opacity.expanded = cache.ui.opacity.bar;
-    migrated = true;
-  }
-  delete cache.ui.opacity.bar;
-  if (cache.ui.opacity && cache.ui.opacity.compact != null && cache.ui.opacity.expanded == null) {
-    cache.ui.opacity.expanded = cache.ui.opacity.compact;
-    migrated = true;
-  }
-  delete cache.ui.opacity.compact;
-  // —— 时间表结构迁移：旧版（单周 7 天带 name）→ 新版（多周循环，每天仅 periods）——
+  // 时间表兜底（与结构版本无关，每次加载都做）：循环参数缺失、周课表为空时补默认
   if (cache.schedule) {
-    const oldWeeks = cache.schedule.weeks;
-    if (Array.isArray(oldWeeks) && oldWeeks.length === 7 && oldWeeks[0] && oldWeeks[0].name != null) {
-      cache.schedule.weeks = [oldWeeks.map((d) => ({ periods: Array.isArray(d.periods) ? d.periods.map((p) => ({ start: p.start, end: p.end })) : [] }))];
-      if (cache.schedule.cycleWeeks == null) cache.schedule.cycleWeeks = 1;
-      if (cache.schedule.restWeek == null) cache.schedule.restWeek = 0;
-      migrated = true;
-    }
-    // 旧版课程名 label 移除（仅保留 start/end）
-    for (const week of cache.schedule.weeks || []) {
-      for (const day of week || []) {
-        if (Array.isArray(day.periods)) {
-          day.periods = day.periods.map((p) => ({ start: p && p.start, end: p && p.end }));
-        }
-      }
-    }
     if (cache.schedule.cycleWeeks == null) cache.schedule.cycleWeeks = 1;
     if (cache.schedule.restWeek == null) cache.schedule.restWeek = 0;
     if (!Array.isArray(cache.schedule.weeks) || cache.schedule.weeks.length === 0) {
@@ -511,4 +601,4 @@ function removeEvent(id) {
   update({ events: (events() || []).filter((x) => x.id !== id) });
 }
 
-module.exports = { load, update, save, events, upsertEvent, removeEvent, defaultEvent, fmtDate, migrateFullscreenMode, DEFAULTS };
+module.exports = { load, update, save, events, upsertEvent, removeEvent, defaultEvent, fmtDate, migrateFullscreenMode, DEFAULTS, SCHEMA_VERSION, MIGRATIONS, applyMigrations };

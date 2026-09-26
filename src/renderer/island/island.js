@@ -16,33 +16,33 @@ let dockMenu = false; // 计时坞操作页（倒计时进行中长按）
 let timer = null; // 短时倒计时载荷 { active, leftMs, totalMs, paused }
 let lastDockSig = ''; // 计时坞渲染签名：相同就不重建 DOM（防闪）
 /* 计时坞的时长控件 = **游标尺**：中间一条固定不动的指示线，刻度尺在它下面左右滑动。
-   内部统一用**秒**表示时长，换算分三段（保证 1 分钟以下是秒级、常用区间是分钟级、超大值不费手）：
+   内部统一用**秒**表示时长，只有两段线性（不再有对数段）——
+   用户明确要求「不要对数坐标、上限 6 小时」，超过 6 小时改用刻度右侧的「自定义」输入：
      · 5 秒 ~ 1 分钟  —— 每格 2 秒（1 分钟时继续往左滑就进入这一段）
-     · 1 分钟 ~ 6 小时 —— 每格 2 分钟（16px/格 → 8px/分钟，拖动够精细）
-     · 超过 6 小时     —— 转**对数**（每格 ×1.25）
+     · 1 分钟 ~ 6 小时 —— 每格 5 分钟（16px/格 → 3.2px/分钟；到 6 小时需滑 71.8 格 ≈ 1150px）
    起始值 15 分钟。 */
 const RULER_PX_PER_STEP = 16;          // 每格宽度（px）
 const SEC_MIN = 5;                     // 最短 5 秒
 const SEC_BOUND = 60;                  // 分钟段的下界 = 1 分钟
 const SEC_PER_STEP_LOW = 2;            // 1 分钟以下：每格 2 秒（这一段要够宽，甩一下才不会冲出去）
-const SEC_PER_STEP = 120;              // 1 分钟 ~ 6 小时：每格 2 分钟
-const LINEAR_MAX_SEC = 21600;          // 线性段上限 = 6 小时
-const P_AT_6H = (LINEAR_MAX_SEC - SEC_BOUND) / SEC_PER_STEP;       // 6 小时对应的格数 = 179.5
-const P_MIN = -(SEC_BOUND - SEC_MIN) / SEC_PER_STEP_LOW;          // 最短 5 秒对应的格数 = -11
-const RULER_RATIO = 1.25;              // 对数段的每格倍率
+const SEC_PER_STEP = 300;              // 1 分钟 ~ 6 小时：每格 5 分钟
+const SEC_MAX = 24 * 3600;             // 时长上限 = 24 小时（只对「自定义」输入生效，刻度止于 6 小时）
+const LINEAR_MAX_SEC = 21600;          // 刻度上限 = 6 小时（再往右是「自定义」入口）
+const P_AT_6H = (LINEAR_MAX_SEC - SEC_BOUND) / SEC_PER_STEP;       // 6 小时对应的格数 = 71.8
+const P_MIN = -(SEC_BOUND - SEC_MIN) / SEC_PER_STEP_LOW;          // 最短 5 秒对应的格数 = -27.5
 
-/** 秒 → 格数（指示线位置）。与 rulerSeconds 互为反函数 */
+/** 秒 → 格数（指示线位置）。与 rulerSeconds 互为反函数。
+    ⚠️ 超过 6 小时的值（「自定义」输入）会被钳到 6 小时那一格：刻度停在最右，
+    时长本身由 pickSeconds 单独承载，所以标签/倒计时仍然是自定义值。 */
 function rulerStepOf(seconds) {
-  const s = Math.max(SEC_MIN, seconds);
+  const s = Math.max(SEC_MIN, Math.min(LINEAR_MAX_SEC, Number(seconds) || SEC_MIN));
   if (s <= SEC_BOUND) return (s - SEC_BOUND) / SEC_PER_STEP_LOW;
-  if (s <= LINEAR_MAX_SEC) return (s - SEC_BOUND) / SEC_PER_STEP;
-  return P_AT_6H + Math.log(s / LINEAR_MAX_SEC) / Math.log(RULER_RATIO);
+  return (s - SEC_BOUND) / SEC_PER_STEP;
 }
-/** 格数 → 秒 */
+/** 格数 → 秒（刻度范围内恒 ≤ 6 小时） */
 function rulerSeconds(step) {
   if (step <= 0) return Math.max(SEC_MIN, Math.round(SEC_BOUND + step * SEC_PER_STEP_LOW));
-  if (step <= P_AT_6H) return Math.round(SEC_BOUND + step * SEC_PER_STEP);
-  return Math.round(LINEAR_MAX_SEC * Math.pow(RULER_RATIO, step - P_AT_6H));
+  return Math.min(LINEAR_MAX_SEC, Math.round(SEC_BOUND + step * SEC_PER_STEP));
 }
 
 let pickSeconds = 15 * 60; // 默认 15 分钟
@@ -191,12 +191,15 @@ window.island.onState((s) => {
   // GPU 玻璃需要窗口/显示器几何（画布像素 ↔ 屏幕物理像素的映射）
   applyGeom(s.geom);
   updateGlassVisibility();
-  applyCornerClip(); // 角落卡片的形状要按新尺寸重算
   applyCameraNotch(s.notch); // 传感器避让：算出黑底与内容布局，render() 依赖它
   render();
   guardNotchContent(); // 布局兜底：内容绝不允许压进禁区
   if (state !== 'notify') setWxEffect(''); // 离开通知形态：撤掉整条岛的天气特效
 });
+
+// 盖板被按下/抬起 → 用与本窗口相同的按下反馈（只放大，不发光）：
+// 用户按的是盖板那块 87×26 的黑色胶囊，没有这条通道他看不到任何"按住了"的提示。
+window.island.onPress((on) => pressFeedback(!!on));
 
 // 窗口移动/缩放时主进程增量推送几何 → 立即按新位置重绘（不需要等下一次视频帧）
 window.island.onGeom((g) => {
@@ -532,7 +535,7 @@ function applyCameraNotch(notch) {
     st.setProperty('--notch-cx', '50%');
     p.style.maskImage = '';
     p.style.webkitMaskImage = '';
-    if (state !== 'corner') p.style.clipPath = '';
+    p.style.clipPath = '';
     delete p.dataset.notch;
     delete document.body.dataset.notch;
     delete document.body.dataset.notchLayout;
@@ -564,7 +567,7 @@ function applyCameraNotch(notch) {
   renderSensorDebug(loc);
   p.style.maskImage = '';
   p.style.webkitMaskImage = '';
-  if (state !== 'corner') p.style.clipPath = '';
+  p.style.clipPath = '';
   p.dataset.notch = `${Math.round(loc.zx)},${Math.round(loc.zy)} ${Math.round(loc.zw)}x${Math.round(loc.zh)}`;
 }
 
@@ -613,18 +616,22 @@ function guardNotchContent() {
   const pr = p.getBoundingClientRect();
   const zx = loc.zx;
   const zr = loc.zx + loc.zw;
+  // 硬约束是「不压禁区本体」（传感器盖板那块）；槽位 slotLeft/slotRight 只是**期望**空隙。
+  // 细条宽度自适应把窗口收窄到刚好等于内容之后，两瓣必然更贴近禁区 ——
+  // 若这里仍按 slot 边界裁切，就会把完全正常的内容裁掉（实测右瓣被压到 12px），
+  // 而且「裁切 → 上报的内容宽变小 → 窗口继续收窄」是崩缩正反馈，必须切断。
   document.querySelectorAll('.nb-l').forEach((el) => {
     const r = el.getBoundingClientRect();
     const left = r.left - pr.left;
-    if (r.right - pr.left > zx - loc.slotLeft && left < zx) {
-      el.style.maxWidth = Math.max(0, Math.floor(zx - loc.slotLeft - left)) + 'px';
+    if (left < zx && r.right - pr.left > zx) {
+      el.style.maxWidth = Math.max(0, Math.floor(zx - left) - 1) + 'px';
       el.style.overflow = 'hidden';
     }
   });
   document.querySelectorAll('.nb-r').forEach((el) => {
     const r = el.getBoundingClientRect();
-    if (r.left - pr.left < zr + loc.slotRight) {
-      el.style.maxWidth = Math.max(0, Math.floor(pr.width - zr - loc.slotRight)) + 'px';
+    if (r.left - pr.left < zr) {
+      el.style.maxWidth = Math.max(0, Math.floor(pr.width - zr) - 1) + 'px';
       el.style.overflow = 'hidden';
     }
   });
@@ -674,7 +681,6 @@ function scheduleLiquidGlass() {
 
 window.addEventListener('resize', () => {
   scheduleLiquidGlass();
-  applyCornerClip(); // 角落卡片形状随尺寸重算
   if (notchData) {
     applyCameraNotch(notchData); // 禁区形状随尺寸重算
     guardNotchContent();
@@ -825,10 +831,23 @@ function stopwatchSvg() {
  * 动画关闭或强度 0 时只出静态图标（图标形状由 data-anim 决定，CSS keyframes 负责动）。
  */
 function wxChipHtml() {
-  // 天气**只在盖板上显示**（盖板窗口负责画），灵动岛任何形态都不再画 chip。
-  // 原先这里按 pos（left/right/cover）与 mode（always/banner）决定画不画 ——
-  // 那两个配置项已随"天气只在盖板"一起作废，分支全部删掉，否则老配置会画出无处安放的 chip。
-  return '';
+  if (!weather || weather.show === false) return '';
+  // 盖板开着 → 天气归盖板，岛内一律不画（否则同一份天气会出现两次）
+  if (weather.coverOn !== false) return '';
+  // 盖板没开 → 天气没别的地方可去：只在大窗口里画。
+  // （细条太窄不承载天气 —— 用户明确要求细条保持极简。）
+  if (state !== 'zoom') return '';
+  const iv = Math.max(0, Math.min(200, Number(weather.intensity) || 0)) / 100;
+  const anim = weather.animEnabled === false || iv === 0 ? 'none' : weather.anim || 'none';
+  const unit = weather.unit === 'f' ? '°F' : '°';
+  const temp = weather.temp == null ? '--' : `${Math.round(weather.temp)}${unit}`;
+  const tip = `${weather.city || ''} ${weather.text || ''}${weather.stale ? '（数据已过期）' : ''}`.trim();
+  return (
+    `<span class="wx${weather.stale ? ' wx-stale' : ''}" id="wx" data-anim="${ESC(anim)}" data-tone="${ESC(weather.tone || 'cool')}"` +
+    ` style="--wx-i:${iv.toFixed(2)}" title="${ESC(tip)}">` +
+    `<b class="wx-temp">${ESC(temp)}</b><em class="wx-text">${ESC(weather.text || '')}</em>` +
+    '</span>'
+  );
 }
 
 /** 通知形态的整条岛天气特效：雨丝 / 雪花 / 晴空 / 云影 / 雷闪 / 雾带（层数按动画强度缩放） */
@@ -854,19 +873,28 @@ let shownUnit = ''; // 当前主时间单位（跨单位时需重建 DOM 以增�
 /** 细条/横幅：把两瓣的实测宽度报给主进程（窗口宽度按内容自适应）。
     必须在 DOM 插入且布局完成后量，所以由 render() 用 rAF 调度。 */
 function measureStripSize() {
-  if (state !== 'strip' && state !== 'expanded') return;
+  // 只在「细条 + 盖板开 + split 布局」时上报：其它布局的窗口宽度有各自来源，
+  // 把它们（横幅的整行宽、盖板关闭时的整行宽）报上来会污染细条的额度。
+  if (state !== 'strip' || !notchVisible || notchLayout !== 'split') return;
   try {
     const l = document.querySelector('.nb-l');
     const r = document.querySelector('.nb-r');
-    let lw = l ? l.offsetWidth : 0;
-    let rw = r ? r.offsetWidth : 0;
-    if (!l && !r) {
-      // 没有盖板/非 split 布局：整行当一个左瓣量
-      const row = document.querySelector('.s-row') || document.querySelector('.e-row');
-      lw = row ? row.scrollWidth : 0;
-      rw = 0;
-    }
-    if (lw || rw) window.island.stripSize({ l: lw, r: rw });
+    const row = document.querySelector('.s-row') || document.querySelector('.e-row');
+    if (!l || !r || !row) return;
+    // 用 scrollWidth 而不是 offsetWidth：要的是「内容真正需要多宽」，
+    // 而 offsetWidth 会被当前窗口宽度夹住 —— 那样收窄的当帧报上来的值是错的，
+    // 下一帧才纠正，中间那一帧内容会滑进盖板禁区带（上一版就栽在这里）。
+    // .s-row 是 width:100% + overflow:hidden，scrollWidth 正好给内容的自然宽度。
+    const lw = Math.max(l.scrollWidth, l.offsetWidth);
+    const rw = Math.max(r.scrollWidth, r.offsetWidth);
+    // 行内的 flex 列间距（.s-row { gap: 5px }）也是内容宽度的一部分：
+    // 窗口宽 = 左瓣 + 间距 + 空隙 + 间距 + 右瓣 才是「无空白」的等式。
+    const cs = getComputedStyle(row);
+    const gap = Math.max(0, Math.round(parseFloat(cs.columnGap || cs.gap) || 0));
+    // 被兜底裁切时这一帧的宽度不可信（量到的是裁切后的值）→ 明确告诉主进程别采纳，
+    // 否则「裁切 → 上报变小 → 窗口收窄 → 裁得更多」会形成崩缩正反馈。
+    const guarded = !!(l.style.maxWidth || r.style.maxWidth);
+    if (lw || rw) window.island.stripSize({ l: lw, r: rw, gap: gap, guarded: guarded });
   } catch (e) { /* 量不出来不影响显示 */ }
 }
 
@@ -874,7 +902,10 @@ function render() {
   const box = $('#content');
   // 离开计时坞就清掉它的页面标识（否则样式会残留在其它形态上）
   if (state !== 'dock') document.body.dataset.dockPage = '';
-  requestAnimationFrame(measureStripSize); // 细条/横幅：渲染完把内容宽度报上去
+  // 细条/横幅：渲染完把内容宽度报上去。
+  // 用**两层 rAF**：单层 rAF 仍可能在"内容已进 DOM、但还没绘制"的那一帧执行，
+  // 量到的是空的两瓣（实测读到"左瓣 34 / 右瓣 0"），主进程据此缩窗口就会溢出到禁区带。
+  requestAnimationFrame(() => requestAnimationFrame(measureStripSize));
 
   // 系统通知优先渲染（不依赖倒计时事件是否存在）；操作按钮在弹窗下方 #dnd-bar
   if (state === 'notify') {
@@ -979,6 +1010,13 @@ function render() {
         '<div class="dk-edit dk-picker">' +
         '<div class="dk-pick-main">' +
         `<span class="dk-pick-label" id="dk-pick-label">${ESC(fmtDuration(pickSeconds))}</span>` +
+        // 6 小时处的「自定义」入口：拖到最右才出现（刻度止于 6 小时）；点开变成分钟输入框
+        '<button class="dk-chip custom" id="dk-custom" data-act="dockCustom" hidden>自定义…</button>' +
+        '<span class="dk-custom-input" id="dk-custom-wrap" hidden>' +
+        '<input type="number" id="dk-custom-min" min="1" max="1440" step="1" inputmode="numeric" aria-label="自定义分钟数">' +
+        '<span class="dk-custom-unit">分钟</span>' +
+        '<button class="dk-chip ok" id="dk-custom-ok" type="button">确定</button>' +
+        '</span>' +
         '<div class="dk-ruler" id="dk-ruler">' +
         '<div class="dk-ruler-track" id="dk-track"></div>' +
         '<div class="dk-ruler-needle" aria-hidden="true"></div>' +
@@ -1014,7 +1052,7 @@ function render() {
       chips +
       '</div>';
     // 游标尺是动态生成的（刻度位置依赖容器宽度），必须在 DOM 插入之后再画一次
-    if (pickerShowing) requestAnimationFrame(rulerRender);
+    if (pickerShowing) requestAnimationFrame(() => { rulerRender(); bindCustomEntry(); updateCustomEntry(); });
     lastDockSig = sig0;
     return;
   }
@@ -1037,38 +1075,6 @@ function render() {
   const { primary, units, past, list, idx } = info;
   const emoji = ESC(primary.emoji || '⏰');
   const name = ESC(primary.name || '事件');
-
-  // 全屏授课：屏幕顶部倒计时进度条（贴顶整宽，填充比例 = 已过 / 总量）
-  if (state === 'progress') {
-    const pct = progressPercent(info);
-    box.innerHTML = `
-      <div class="pb-wrap">
-        <div class="pb-fill" data-role="fill" style="width:${pct}%"></div>
-        <div class="pb-label">
-          <span class="pb-name">${t('距')} ${name}</span>
-          <span class="pb-num" data-role="days">${past ? t('已过') : units.num}${past ? '' : t(units.unit)}</span>
-          ${ui.showSeconds && !past ? `<span class="pb-time" data-role="time">${t(subText(units))}</span>` : ''}
-        </div>
-      </div>`;
-    shownUnit = past ? '' : units.unit;
-    return;
-  }
-
-  // 全屏授课：右上角角落卡片（贴住屏幕右上角，只显示倒计时剩余时间）
-
-  if (state === 'corner') {
-    shownUnit = past ? '' : units.unit;
-    box.innerHTML = `
-      <div class="cz-wrap">
-        <div class="cz-mid">
-          <span class="cz-num" data-role="days">${past ? t('已过') : units.num}</span>
-          ${past ? '' : `<span class="cz-unit" data-role="unit">${t(units.unit)}</span>`}
-        </div>
-        ${ui.showSeconds && !past ? `<div class="cz-time" data-role="time">${t(subText(units))}</div>` : ''}
-      </div>`;
-    applyCornerClip();
-    return;
-  }
 
   if (state === 'expanded') {
     // 放大版灵动岛：事件名 + 主时间单位（不足一天自动降级为时/分/秒）+ 更小单位
@@ -1115,52 +1121,6 @@ function subText(units) {
   return units.sub.join('');
 }
 
-/** 顶部进度条填充比例（%）：已过 / 总量；总量 = 设置里的天数（默认 365） */
-function progressPercent(info) {
-  const total = Math.max(1, typeof ui.progressTotalDays === 'number' ? ui.progressTotalDays : 365);
-  const remainDays = info.past ? 0 : Math.max(0, Math.ceil(info.ms / 86400000));
-  const done = Math.max(0, Math.min(total, total - remainDays));
-  return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
-}
-
-/**
- * 右上角角落卡片的形状路径：卡片贴在屏幕右上角，所以
- *   左上、右下 = **内凹**圆角（与屏幕边缘平滑相接，"反着的圆角"）
- *   左下       = 普通外凸圆角
- *   右上       = 方角（就是屏幕角本身）
- * border-radius 做不出内凹圆角，所以用 clip-path: path() 精确画出来。
- */
-function cornerClipPath(w, h, r) {
-  const rr = Math.max(0, Math.min(r, Math.floor(Math.min(w, h) / 2)));
-  if (rr < 1) return `M 0 0 L ${w} 0 L ${w} ${h} L 0 ${h} Z`;
-  return [
-    `M ${rr} 0`, // 顶边从左上内凹圆角结束处开始
-    `L ${w} 0`, // 顶边（贴屏幕顶）
-    `L ${w} ${h - rr}`, // 右边（贴屏幕右）
-    `A ${rr} ${rr} 0 0 0 ${w - rr} ${h}`, // 右下：内凹圆角
-    `L ${rr} ${h}`, // 底边
-    `A ${rr} ${rr} 0 0 1 0 ${h - rr}`, // 左下：普通外凸圆角
-    `L 0 ${rr}`,
-    `A ${rr} ${rr} 0 0 0 ${rr} 0`, // 左上：内凹圆角
-    'Z',
-  ].join(' ');
-}
-
-/** 按当前 pill 尺寸重算角落卡片裁剪路径（只有 corner 形态用；其它形态清掉） */
-function applyCornerClip() {
-  const p = $('#pill');
-  if (!p) return;
-  if (state !== 'corner') {
-    p.style.clipPath = '';
-    return;
-  }
-  const w = Math.max(1, p.clientWidth || p.offsetWidth || 0);
-  const h = Math.max(1, p.clientHeight || p.offsetHeight || 0);
-  // 圆角随尺寸自适应：小卡片别被圆角吃掉，大卡片保持"平滑长上去"的观感
-  const r = Math.max(8, Math.min(30, Math.round(Math.min(w, h) * 0.34)));
-  p.style.clipPath = `path('${cornerClipPath(w, h, r)}')`;
-  p.dataset.cornerShape = `w${w} h${h} r${r}`;
-}
 
 /* ---------- 通知展示框自适应：按字体与字数测量，上报主进程调整窗口尺寸 ---------- */
 
@@ -1291,6 +1251,11 @@ function tickUpdate() {
 
 setInterval(tickUpdate, 1000);
 
+// 细条宽度自适应要「连续两次读数一致」才采纳（见主进程 setStripSize 的对称双确认）。
+// 内容不变时 render() 不会重跑，没有这个周期重测就永远等不到第二次确认。
+// 非细条状态下它第一行就返回，开销可以忽略。
+setInterval(measureStripSize, 500);
+
 /* ---------- 触摸/鼠标交互：单击 / 双击 / 按住上下拖拽 ---------- */
 
 const pill = $('#pill');
@@ -1303,6 +1268,9 @@ pill.addEventListener('pointerdown', (e) => {
   pressDbg.lastType = e.pointerType || '';
   pressDbg.lastTarget = (e.target && (e.target.id || e.target.className || e.target.tagName)) || '';
   if (e.target.closest('button')) return;
+  // 计时坞已经展开：坞内长按一律不响应（防误触）。坞里的控件（刻度尺 / 芯片按钮）各有自己的监听，
+  // 不受这里影响；坞里只保留单击与上下拖拽的既有行为。
+  if (state === 'dock') return;
   drag = { x: e.clientX, y: e.clientY, id: e.pointerId, moved: false, dx: 0, dy: 0, pointerType: e.pointerType || 'mouse' };
   // 长按：不动 700ms → 启动计时坞（快捷添加倒计时）；滑动/抬起则取消
   clearTimeout(longPressTimer);
@@ -1407,9 +1375,11 @@ $('#content').addEventListener('click', (e) => {
   if (chip) {
     e.stopPropagation();
     if (chip.dataset.act === 'timerStart') {
-      // 时长来自游标尺当前值（原先挂在按钮的 data-ms 上，现在刻度是连续滑动的）
+      // 时长来自游标尺当前值（原先挂在按钮的 data-ms 上，现在刻度是连续滑动的）；
+      // 「自定义」输入的值也写在 pickSeconds 上，所以这里天然生效
       window.island.action({ type: 'timerStart', ms: pickSeconds * 1000, label: fmtDuration(pickSeconds) });
     }
+    else if (chip.dataset.act === 'dockCustom') enterCustomMode();
     else if (chip.dataset.days) window.island.action({ type: 'dockAdd', days: Number(chip.dataset.days) });
     else window.island.action({ type: chip.dataset.act });
   }
@@ -1445,8 +1415,13 @@ function rulerRender() {
   const half = w / 2; // 指示线固定在容器正中
   const span = half / RULER_PX_PER_STEP + 1;
   // ⚠️ from 不能钳到 0：1 分钟以下是**秒级区**（负格数），钳掉的话那段一根刻度都没有。
-  const from = Math.floor(rulerStep - span);
-  const to = Math.ceil(rulerStep + span);
+  // 但要钳到**下界 P_MIN（最短 5 秒）**：划到头之后左端不该再有刻度 ——
+  // 那些格数会被 rulerSeconds 全部压成同一个 5 秒，画出来是一排**纹丝不动**的刻度，
+  // 手感上就像卡住了。左端停在指针处（= 下界那一格），空白本身就是「到头了」的提示。
+  const from = Math.max(P_MIN, Math.floor(rulerStep - span));
+  // 上界同理：到 6 小时后右端不该再有刻度 —— 那些格数会被 rulerSeconds 全压成 6 小时，
+  // 画出来同样是一排不动的刻度（用户：「划到最右边也不能有刻度啊」）。
+  const to = Math.min(P_AT_6H, Math.ceil(rulerStep + span));
   let html = '';
   for (let i = from; i <= to; i++) {
     const x = half + (i - rulerStep) * RULER_PX_PER_STEP;
@@ -1459,7 +1434,8 @@ function rulerRender() {
 /** 移动游标尺：step → 秒，更新标签并上报主进程。
     下界是「最短 5 秒」（1 分钟时继续往左滑就进入秒级），**向上不封顶**。 */
 function setRulerStep(v) {
-  rulerStep = Math.max(P_MIN, v);
+  // 上界 = 6 小时（P_AT_6H）：到顶就停，再往右是「自定义」入口
+  rulerStep = Math.min(P_AT_6H, Math.max(P_MIN, v));
   const s = rulerSeconds(rulerStep);
   const changed = s !== pickSeconds;
   pickSeconds = s;
@@ -1467,6 +1443,80 @@ function setRulerStep(v) {
   const lb = document.getElementById('dk-pick-label');
   if (lb) lb.textContent = fmtDuration(s);
   if (changed) window.island.action({ type: 'dockPick', seconds: s });
+  updateCustomEntry(); // 到 / 离开 6 小时时，「自定义」入口要跟着出现 / 消失
+}
+
+/* ---------------- 6 小时处的「自定义」时长输入 ----------------
+   刻度只到 6 小时（用户要求：不要对数、上限 6h），更长的时长在这里输入（上限 24 小时）。
+   输入值直接写进 pickSeconds —— 开始计时、盖板显示都读它，所以完全不用碰刻度。 */
+let customMode = false;
+
+/** 到 6 小时才显示「自定义」入口；输入态时隐藏入口、显示输入框 */
+function updateCustomEntry() {
+  const chip = document.getElementById('dk-custom');
+  const wrap = document.getElementById('dk-custom-wrap');
+  if (!chip || !wrap) return;
+  const atMax = rulerStep >= P_AT_6H - 1e-6;
+  chip.hidden = customMode || !atMax;
+  wrap.hidden = !customMode;
+}
+
+function enterCustomMode() {
+  customMode = true;
+  updateCustomEntry();
+  const input = document.getElementById('dk-custom-min');
+  if (input) {
+    input.value = String(Math.max(1, Math.round(pickSeconds / 60)));
+    setTimeout(() => { try { input.focus(); input.select(); } catch (e) { /* ignore */ } }, 0);
+  }
+}
+
+function leaveCustomMode() {
+  if (!customMode) return;
+  customMode = false;
+  updateCustomEntry();
+}
+
+/** 确认自定义分钟数：写进 pickSeconds 并上报（同时收起输入态） */
+function applyCustomMinutes() {
+  if (!customMode) return; // 「确定」与失焦会各触发一次，第二次直接忽略
+  const input = document.getElementById('dk-custom-min');
+  const raw = parseInt((input && input.value) || '', 10);
+  leaveCustomMode();
+  if (!(raw > 0)) return;
+  const minutes = Math.max(1, Math.min(Math.round(SEC_MAX / 60), raw)); // 上限 24 小时
+  pickSeconds = Math.max(SEC_MIN, Math.min(SEC_MAX, minutes * 60));
+  const lb = document.getElementById('dk-pick-label');
+  if (lb) lb.textContent = fmtDuration(pickSeconds);
+  window.island.action({ type: 'dockPick', seconds: pickSeconds });
+}
+
+/** 输入框事件：回车 / 失焦 / 点「确定」都算确认（DOM 每次重建，所以在 render 里重新绑定） */
+function bindCustomEntry() {
+  const input = document.getElementById('dk-custom-min');
+  const ok = document.getElementById('dk-custom-ok');
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); applyCustomMinutes(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); leaveCustomMode(); }
+    });
+    input.addEventListener('focusout', () => setTimeout(applyCustomMinutes, 120));
+    input.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+  if (ok) ok.addEventListener('click', (e) => { e.stopPropagation(); applyCustomMinutes(); });
+}
+
+/* 惯性三档（设置「计时坞惯性」）：丝滑的关键是**减速度小**（速度衰减慢、尾巴长），不是初速大。
+   滑行距离 = vMax²/(2·decel)、滑行时长 = vMax/decel。
+   必须放在模块作用域：自检钩子 window.__rulerState() 也要读它。 */
+const INERTIA_PRESETS = {
+  sharp: { vMax: 26, decel: 1.2 },    // 急促：滑 ~282px / ~0.36s
+  standard: { vMax: 22, decel: 0.6 }, // 标准（默认）：滑 ~403px / ~0.61s
+  soft: { vMax: 15, decel: 0.28 },    // 平缓：滑 ~402px / ~0.89s
+};
+function inertiaPreset() {
+  const k = ui && ui.timerInertia;
+  return INERTIA_PRESETS[k] || INERTIA_PRESETS.standard;
 }
 
 // 游标尺交互：按住左右拖动（松手带**惯性**继续滑）；滚轮也能调（桌面更顺手）。
@@ -1481,16 +1531,23 @@ function setRulerStep(v) {
     if (inertiaRAF) cancelAnimationFrame(inertiaRAF);
     inertiaRAF = 0;
   }
-  /** 松手后按速度继续滑并逐渐减速 —— 就是"滑一下能滑一段"的手感 */
+  /** 松手后按**恒定减速度**继续滑：滑行距离 = v²/(2·减速度)、滑行时长 = v/减速度。
+      三档由设置「计时坞惯性」决定（急促 / 标准 / 平缓）——
+      「丝滑」的关键是**减速度小**（速度衰减慢、尾巴长），不是初速大。
+      旧版是指数衰减（每帧 ×0.90）+ 初速限 14px/帧，只滑 ~126px，用户反馈「一点也不丝滑」。 */
   function startInertia() {
     stopInertia();
-    let v = vel;
+    const { vMax, decel } = inertiaPreset();
+    let v = Math.max(-vMax, Math.min(vMax, vel));
     if (Math.abs(v) < 1.6) return; // 太慢就当没甩
-    const decay = 0.90;            // 每帧衰减
+    const dir = Math.sign(v);
     const tick = () => {
-      v *= decay;
-      if (Math.abs(v) < 0.35) { inertiaRAF = 0; return; }
+      v -= dir * decel;
+      if (Math.sign(v) !== dir) { inertiaRAF = 0; return; }
+      const before = rulerStep;
       setRulerStep(rulerStep - v / RULER_PX_PER_STEP);
+      // 到边界（5 秒 / 6 小时）立刻停：刻度已经不动了，再让速度衰减只会显得"卡住"
+      if (rulerStep === before && (rulerStep <= P_MIN || rulerStep >= P_AT_6H)) { inertiaRAF = 0; return; }
       inertiaRAF = requestAnimationFrame(tick);
     };
     inertiaRAF = requestAnimationFrame(tick);
@@ -1502,6 +1559,7 @@ function setRulerStep(v) {
     e.stopPropagation();
     e.preventDefault();
     stopInertia(); // 手指按下去就立刻停住惯性
+    if (customMode) leaveCustomMode(); // 一动刻度就退出「自定义」输入态
     dragging = true;
     lastX = e.clientX;
     vel = 0;
@@ -1513,7 +1571,8 @@ function setRulerStep(v) {
     lastX = e.clientX;
     // 指数平滑估速度（对最近几次移动更敏感）
     // 限速：一次大跨度移动（或极快的甩动）不该造出荒谬的惯性距离
-    vel = Math.max(-14, Math.min(14, dx * 0.7 + vel * 0.3));
+    const vMaxNow = inertiaPreset().vMax;
+    vel = Math.max(-vMaxNow, Math.min(vMaxNow, dx * 0.7 + vel * 0.3));
     // 向右拖 → 刻度右移 → 指示线落在更小的值上（时间变短），与"推尺子"的直觉一致
     setRulerStep(rulerStep - dx / RULER_PX_PER_STEP);
   }, true);
@@ -1531,6 +1590,23 @@ function setRulerStep(v) {
     setRulerStep(rulerStep + (e.deltaY > 0 ? 1 : -1) * 0.8);
   }, { capture: true, passive: false });
 })();
+
+/** 自检/诊断钩子：按**秒**设定游标尺 —— 与「每格多少秒」解耦，
+    否则测试写死像素拖拽，步长一改就设错值（实测设成了 71 分钟）。 */
+window.__rulerSetSeconds = (sec) => {
+  setRulerStep(rulerStepOf(sec));
+  return pickSeconds;
+};
+
+/** 自检/诊断钩子：游标尺的边界与当前刻度（校验「划到头不再画刻度」用） */
+window.__rulerState = () => {
+  const box = document.getElementById('dk-ruler');
+  const ticks = Array.prototype.map.call(
+    document.querySelectorAll('#dk-track .dk-tick'),
+    (el) => Math.round(parseFloat(el.style.left) || 0)
+  );
+  return { step: rulerStep, min: P_MIN, max: P_AT_6H, w: box ? box.clientWidth : 0, ticks: ticks, inertia: inertiaPreset() };
+};
 
 // 通知按钮统一由下方 #dnd-bar 的监听处理（通知弹窗本体 .n-wrap 里没有按钮）。
 // ⚠️ 这里曾经还有一条 #content → closest('button[data-act]') 的通用监听，它**同时命中计时坞芯片**：

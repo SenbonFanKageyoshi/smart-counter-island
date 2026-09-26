@@ -1,0 +1,80 @@
+name: Release
+
+# 推 v* tag 就自动打包发布。也可以手动触发（补发某个版本）。
+#
+# 为什么走 CI：本地 github.com 直连不通、证书吊销检查会拦、CDN 限速会断流，
+# 而且手动发布要把 GitHub token 贴进命令行（会泄漏）。CI runner 在墙外，这些都不存在，
+# token 也只用仓库自带的 GITHUB_TOKEN（存在 Secrets 里，不需要人工碰）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要补发的 tag（例如 v3.2.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 计算版本号
+        id: v
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # 版本号必须和 tag 一致 —— 之前手工发布时代码里 3.0.7、线上却因重编号变成 3.0.3，
+      # 这种对不上的情况从源头挡掉。
+      - name: 校验 package.json 版本 == tag
+        shell: bash
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          echo "package.json=$PKG   tag=${{ steps.v.outputs.version }}"
+          if [ "$PKG" != "${{ steps.v.outputs.version }}" ]; then
+            echo "::error::package.json 版本($PKG) 与 tag(${{ steps.v.outputs.version }}) 不一致"
+            exit 1
+          fi
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 闸门：自检不过不发。
+      # T18/T21/T22/T23 依赖真实 GPU（GPU 玻璃帧率、观感四项、不截屏、圆角过渡），
+      # 在无 GPU 的环境里恒红 —— 这类"环境不可验证"的失败不计入闸门，其余一律计入。
+      - name: 自检（环境类失败不计入闸门）
+        shell: bash
+        run: |
+          npx electron . --test --test-fast 2>&1 | tee test.log
+          BAD=$(grep '^\[test\] FAIL' test.log | grep -vE 'T18 |T21 |T22 |T23 ' | wc -l)
+          echo "非环境类失败: $BAD"
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::自检未通过（$BAD 条非环境类失败）"
+            exit 1
+          fi
+
+      - name: 打包
+        run: npm run dist
+
+      - name: 建 release 并上传附件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: Smart Counter Island ${{ steps.v.outputs.version }}
+          body_path: release-notes-${{ steps.v.outputs.version }}.md
+          files: |
+            release/SmartCounterIsland-Setup-*.exe
+            release/SmartCounterIsland-*-portable.exe

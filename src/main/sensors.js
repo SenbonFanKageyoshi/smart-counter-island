@@ -95,11 +95,11 @@ function belowTop(zone, islandTop) {
  *   'below' 下方布局（内容从禁区底边下方开始 —— 横幅/大卡片都往传感器下方长）
  *   'none'  不显示内容（禁区不在小岛上，或该状态不需要内容）
  * 手动指定 split/below 时直接用；'auto' 时按状态判断：
- *   细条与顶部进度条只能左右分（太薄，下方放不下），其余（横幅 / 倒计时窗口 / 通知）一律走下方布局。
+ *   细条只能左右分（太薄，下方放不下），其余（横幅 / 倒计时窗口 / 通知）一律走下方布局。
  */
 function pickLayout(want, state, pillH, top) {
   if (want === 'split' || want === 'below' || want === 'none') return want;
-  if (state === 'strip' || state === 'progress') return 'split';
+  if (state === 'strip') return 'split';
   return 'below';
 }
 
