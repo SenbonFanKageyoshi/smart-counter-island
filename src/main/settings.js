@@ -202,6 +202,7 @@ const DEFAULTS = {
     y: null,
     hideOnFullscreen: true,    // 全屏授课/看视频时彻底隐藏
     quietInClass: true,        // 上课时间静默站立、不闲聊（只答课表与倒计时）
+    perch: { enabled: true, autoSec: 120 }, // 允许趴到小岛倒计时上（自动约每 2 分钟一次；点它也会上去）
     announceClass: true,       // 上课/下课提醒时教学助手也出面念一遍
     // AI：OpenAI 兼容接口。**永不开启思考模式**（ai.js 里有硬性防呆）
     ai: {

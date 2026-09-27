@@ -169,6 +169,7 @@ class Pet {
     }
     if (v && !win.isVisible()) {
       win.showInactive();
+      this.nudgePaint(); // 软件合成下不重绘就不上屏
       this.visible = true;
     } else if (!v && win.isVisible()) {
       win.hide();
@@ -267,6 +268,53 @@ class Pet {
     return false;
   }
 
+  /** 把窗口"上屏"：软件合成（GPU 被虚拟显示驱动顶掉）时，透明窗口 showInactive() 之后
+      常常不呈现第一帧 —— 窗口 isVisible()=true、渲染层也真画了，屏幕上看不见。
+      对照实验（2026-09-27，四角四种配置）：show:true 可见、每 0.4s invalidate() 也可见。
+      这里 invalidate + 轻微抖一次 opacity（强制分层窗口重新合成，肉眼不可见）。 */
+  nudgePaint() {
+    const poke = () => {
+      if (!this.win || this.win.isDestroyed()) return;
+      try { this.win.webContents.invalidate(); } catch (e) { /* ignore */ }
+      try { const o = this.win.getOpacity(); this.win.setOpacity(Math.max(0.05, o - 0.002)); this.win.setOpacity(o); } catch (e) { /* ignore */ }
+    };
+    poke();
+    setTimeout(poke, 250);
+    setTimeout(poke, 1200);
+    clearInterval(this._paintTick);
+    this._paintTick = setInterval(() => {
+      if (!this.win || this.win.isDestroyed() || !this.win.isVisible()) { clearInterval(this._paintTick); this._paintTick = null; return; }
+      poke();
+    }, 2000);
+  }
+
+  /** 把舞台窗口搬到"教学助手正好落在锚点上"：窗口中心对准锚点 x，脚底留 ~130px。
+      小岛贴在屏幕顶部、舞台默认在右下角 —— 不搬窗口它根本走不到锚点（舞台只有 360×300）。 */
+
+  /** 把舞台窗口搬到「教学助手正好落在锚点上」：窗口中心对准锚点 x，脚底留 ~130px。
+      小岛贴在屏幕顶部、舞台默认在右下角 —— 不搬窗口它根本走不到锚点（舞台只有 360×300）。 */
+  /** 现在想不想趴到小岛倒计时上（每拍问一次）：有锚点 + 开关开 + 到点了 → 顺手把舞台搬过去 */
+  perchWanted() {
+    const a = typeof this.perchSource === 'function' ? this.perchSource() : null;
+    this._perchAnchor = a;
+    const pc = this.cfg().perch || {};
+    const now = Date.now();
+    if (!a || pc.enabled === false) return false;
+    if (now >= (this.perchAskUntil || 0) && now < (this.nextPerchAt || 0)) return false;
+    this.perchAskUntil = 0;
+    this.nextPerchAt = now + Math.max(30, Number(pc.autoSec) || 120) * 1000;
+    this.alignStageForPerch(a);
+    return true;
+  }
+
+  alignStageForPerch(a) {
+    if (!a || !this.win || this.win.isDestroyed()) return;
+    const b = this.win.getBounds();
+    const dx = Math.round(a.x - b.width / 2 - b.x);
+    const dy = Math.round(a.y - 130 - b.y);
+    if (dx || dy) this.moveStage(dx, dy);
+  }
+
   /** 行为节奏：安静档权重（课堂不抢注意力）+ 睡觉门槛；可在设置里覆盖 */
   brainCfg() {
     const b = this.cfg().behavior || {};
@@ -300,6 +348,7 @@ class Pet {
         talking: this.talking,
         sinceInteractMs: now - this.sinceInteract,
         seed: Math.floor(now / 1000),
+        perch: this.perchWanted(), // 趴到小岛倒计时上（有锚点 + 到点了才想上去）
         cfg: this.brainCfg(),
       },
       this.brainState
@@ -307,7 +356,14 @@ class Pet {
     this.brainState = { action: decided.action, dir: decided.dir, until: decided.until };
     this.action = decided.action;
     this.dir = decided.dir || this.dir;
-    this.send('pet:state', { action: this.action, dir: this.dir, inClass: !!inClass, dnd: !!this.env.dnd });
+    this.send('pet:state', {
+      action: this.action,
+      dir: this.dir,
+      inClass: !!inClass,
+      dnd: !!this.env.dnd,
+      // 趴着时把锚点一起发下去（数字每秒变宽窄、小岛会移动 → 渲染层平滑跟随）
+      perch: decided.action === 'perch' && this._perchAnchor ? { x: this._perchAnchor.x, y: this._perchAnchor.y } : null,
+    });
     return decided;
   }
 

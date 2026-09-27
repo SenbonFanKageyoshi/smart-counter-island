@@ -1928,6 +1928,15 @@ class Island {
     return 'capture'; // auto / capture（模糊玻璃）
   }
 
+  /** 教学助手「趴到倒计时上」的锚点（屏幕 DIP）：小岛窗口中心 + 胶囊顶边。
+      zoom/expanded 里数字是居中的，所以窗口中心即数字中心；细条/通知/隐藏时返回 null。 */
+  petAnchorTarget() {
+    if (!this.win || this.win.isDestroyed() || this.autoHidden) return null;
+    if (this.state !== 'zoom' && this.state !== 'expanded') return null;
+    const b = this.win.getBounds();
+    return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + PAD + 2), state: this.state };
+  }
+
   /** GPU 液态玻璃是否正在生效（渲染层取流成功且未回退） */
   glStreamActive() {
     return this.glActive === true && this.effectiveGlassMode() === 'webgl';

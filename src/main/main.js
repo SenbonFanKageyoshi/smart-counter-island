@@ -172,6 +172,7 @@ async function main() {
   registerPetIpc(pet);
   pet.applySettings();
   // 环境来源集中在这里：全屏授课（island 判定）、上课中（时间表）、免打扰
+  pet.perchSource = () => (island && island.petAnchorTarget ? island.petAnchorTarget() : null); // 趴倒计时的锚点
   pet.envSource = () => {
     const st = settings.load();
     return {
@@ -6343,7 +6344,34 @@ function runTests() {
         }
       }
 
-      /** 自检收尾：先停采集、关掉各窗口再退出。
+      // —— T44 教学助手：上屏重绘 / 趴倒计时（perch）/ 命中判定 ——
+      // 背景：软件合成（GPU 被虚拟显示驱动顶掉）时透明窗口 showInactive() 不上屏 → nudgePaint 强制重绘；
+      //       趴倒计时 = 小岛给锚点（zoom/expanded 的数字居中区）→ 行为机出 perch → 舞台搬过去 + 渲染层平滑跟随。
+      {
+        const petMod44 = require('./pet');
+        const nudge44 = typeof petMod44.Pet.prototype.nudgePaint === 'function';
+        const wanted44 = typeof petMod44.Pet.prototype.perchWanted === 'function';
+        const align44 = typeof petMod44.Pet.prototype.alignStageForPerch === 'function';
+        ok('T44 上屏重绘与 perch 方法就位（nudgePaint=' + nudge44 + ' perchWanted=' + wanted44 + ' alignStage=' + align44 + '）', nudge44 && wanted44 && align44);
+        const brain44 = require('./pet-brain');
+        const p1_44 = brain44.nextAction({ now: 0, seed: 1, perch: true }, null);
+        const p2_44 = brain44.nextAction({ now: 0, seed: 1, perch: true, talking: true }, null);
+        const p3_44 = brain44.nextAction({ now: 0, seed: 1, perch: true, inClass: true }, null);
+        const p4_44 = brain44.nextAction({ now: 0, seed: 1, perch: true, fullscreen: true }, null);
+        ok(
+          'T44 perch 行为与优先级（有锚点→' + p1_44.action + ' 说话中→' + p2_44.action + ' 上课→' + p3_44.action + ' 全屏→' + p4_44.action + ' 时长=' + brain44.HOLD_MS.perch.join('-') + 'ms）',
+          p1_44.action === 'perch' && p2_44.action === 'talk' && p3_44.action === 'perch' && p4_44.action === 'hidden' && brain44.HOLD_MS.perch[0] >= 10000
+        );
+        const anchor44 = island.petAnchorTarget();
+        ok(
+          'T44 小岛锚点（当前 state=' + island.state + ' → ' + JSON.stringify(anchor44) + '）',
+          anchor44 === null || (typeof anchor44.x === 'number' && typeof anchor44.y === 'number' && anchor44.y < 400)
+        );
+        const hit44 = pet && pet.win && !pet.win.isDestroyed() ? await pet.win.webContents.executeJavaScript("(function(){var s=window.__petState&&window.__petState();return s?typeof s.hitRectAt:'none';})()") : 'pet-off';
+        ok('T44 命中判定改成外接矩形+10px（渲染层 hitRectAt=' + hit44 + '）', hit44 === 'function' || hit44 === 'pet-off');
+      }
+
+      /** 自检收尾：先停采集、关掉各窗口再退出。      /** 自检收尾：先停采集、关掉各窗口再退出。
           以前直接 app.exit() —— 它跳过 before-quit，采集会话来不及释放；实测这样会把系统的
           DXGI 桌面复制留在坏状态：之后**任何**进程截图都从启动就失败，并掉到 670~930ms 的慢路径
           （正常 ~175ms），GPU 玻璃那几条断言（T18/T21/T22/T23）跟着全红。 */

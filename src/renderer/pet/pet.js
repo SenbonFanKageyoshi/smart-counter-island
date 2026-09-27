@@ -63,6 +63,18 @@ function resize() {
 
 window.addEventListener('resize', resize);
 
+/** 命中判定（2026-09-27 改）：精灵**外接矩形 + 10px 容差**，不再逐像素。
+    逐像素太"抠"：飘带/发丝/两腿之间的空档点不到，手感像"点不中"。
+    矩形判定随手就能点/拖；代价只是精灵四周 10px 内会吃掉点击（远小于整窗不穿透）。 */
+const HIT_PAD = 10;
+const DRAG_PX = 6; // 拖动阈值：3px 太紧，轻微手抖就变成拖动
+
+function hitRectAt(x, y) {
+  const b = spriteBox();
+  const hw = b.w / 2 + HIT_PAD;
+  return x >= P.x - hw && x <= P.x + hw && y >= P.y - b.h - HIT_PAD && y <= P.y + HIT_PAD;
+}
+
 /** 命中判定：遮罩画布该点 alpha > 25 视为"身上" */
 function alphaAt(x, y) {
   try {
@@ -98,6 +110,10 @@ function activeReact() {
 /** 这段动画一共多少帧：精灵图看 cells/count，帧序列看图片数。
     ⚠️ 精灵图的 s.frames 只有 **1 张图**（帧在图上按格切）——旧代码用 frames.length > 1 判断能否推进，
     于是图集素材永远停在第 0 帧，看起来就是"一直是同一帧"。 */
+function half0() {
+  return Math.max(8, spriteBox().w / 2) + 4;
+}
+
 function frameCountOf(s) {
   if (!s) return 0;
   if (s.sheet) return Math.max(1, s.sheet.count || 1);
@@ -256,6 +272,16 @@ function frame() {
   if (P.t % 150 === 9) P.blinking = false;
   // 活动半宽每帧跟着"当前素材"重算：素材/动作一换尺寸就变（旧值会让边界算错）
   P.half = Math.max(8, spriteBox().w / 2) + 4;
+  // 趴在小岛数字上：目标点用**屏幕坐标**给，这里按窗口屏幕位置换算成画布内坐标并平滑跟过去
+  const perchAct = (P.react && P.react.action === 'jump' ? '' : activeReact()) || P.action;
+  if (perchAct === 'perch' && P.perch) {
+    const box = spriteBox();
+    const tx = Math.max(half0(), Math.min(P.perch.x - (window.screenX || 0), P.w - half0()));
+    const ty = Math.max(box.h + 4, Math.min(P.perch.y - (window.screenY || 0), P.h - 6));
+    P.x += (tx - P.x) * 0.3;
+    P.y += (ty - P.y) * 0.3;
+    P.dir = 1;
+  }
   // 帧推进：按当前状态的 fps（精灵图按格数推进，不是按图片数）
   if (P.sprites) {
     const react = activeReact();
@@ -355,7 +381,7 @@ function positionBubble() {
 
 let overPet = false;
 window.addEventListener('mousemove', (e) => {
-  const over = alphaAt(e.clientX, e.clientY) > 25 || overBubble(e.clientX, e.clientY);
+  const over = hitRectAt(e.clientX, e.clientY) || overBubble(e.clientX, e.clientY);
   if (over !== overPet) {
     overPet = over;
     window.pet.hit(over);
@@ -365,13 +391,13 @@ window.addEventListener('mousemove', (e) => {
 let drag = null;
 window.addEventListener('mousedown', (e) => {
   if (overBubble(e.clientX, e.clientY)) return;
-  if (alphaAt(e.clientX, e.clientY) > 25) drag = { sx: e.screenX, sy: e.screenY, moved: false };
+  if (hitRectAt(e.clientX, e.clientY)) drag = { sx: e.screenX, sy: e.screenY, moved: false };
 });
 window.addEventListener('mousemove', (e) => {
   if (!drag) return;
   const dx = e.screenX - drag.sx;
   const dy = e.screenY - drag.sy;
-  if (Math.abs(dx) + Math.abs(dy) > 3) {
+  if (Math.abs(dx) + Math.abs(dy) > DRAG_PX) {
     drag.moved = true;
     window.pet.move(dx, dy);
     drag.sx = e.screenX;
@@ -381,7 +407,7 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', (e) => {
   const wasDrag = drag && drag.moved;
   drag = null;
-  if (!wasDrag && alphaAt(e.clientX, e.clientY) > 25) {
+  if (!wasDrag && hitRectAt(e.clientX, e.clientY)) {
     P.react = { action: 'jump', until: Date.now() + 1100 }; // 被戳一下：跳一下
     window.pet.interact();
     toggleBubble();
@@ -467,6 +493,7 @@ window.pet.onState((s) => {
   P.action = s.action || 'idle';
   if (s.dir) P.dir = s.dir;
   P.inClass = !!s.inClass;
+  P.perch = s.perch || null; // { x, y }：小岛数字的屏幕坐标（趴上去的目标点；null = 取消）
   badge.classList.toggle('on', P.inClass);
   if (P.action === 'sleep' && bubble.classList.contains('show')) toggleBubble(false);
 });
@@ -547,5 +574,7 @@ window.__petState = () => ({
     ? Object.fromEntries(Object.entries(P.sprites).map(([k, v]) => [k, v.sheet ? (v.sheet.count || 1) : (v.frames || []).length]))
     : {},
   alphaAt: (x, y) => alphaAt(x, y),
-  hitAt: (x, y) => alphaAt(x, y) > 25,
+  hitAt: (x, y) => alphaAt(x, y) > 25, // 逐像素（旧口径，保留给既有断言）
+  hitRectAt: (x, y) => hitRectAt(x, y), // 现在的实际判定：外接矩形 + 10px
+  perch: P.perch,
 });

@@ -63,7 +63,10 @@ jobs:
           # 排除「环境不可验证」的失败：
           #   T18/T21/T22/T23 —— 依赖真实 GPU（GPU 玻璃帧率/观感四项/不截屏/圆角过渡）
           #   T29 细条白字 —— 依赖 capturePage 真能截到画面；runner 无真实显示器/GPU 时亮像素恒为 0
-          BAD_LIST=$(echo "$ALL" | grep -vE 'T18 |T21 |T22 |T23 |T29 细条白字' | grep . || true)
+          #   T39/T41 —— 液态玻璃：需要真实桌面截屏/滤镜重建
+          #   T40 —— 前台窗口探针（runner 上没有真实前台应用切换）
+          #   T43 —— 教学助手窗口的帧推进/命中：需要真实桌面上屏，无显示器时采样恒为空
+          BAD_LIST=$(echo "$ALL" | grep -vE 'T18 |T21 |T22 |T23 |T29 细条白字|T39 |T40 |T41 |T43 ' | grep . || true)
           BAD=$(echo "$BAD_LIST" | grep -c . || true)
           echo "非环境类失败: $BAD"
           if [ "$BAD" -ne 0 ]; then

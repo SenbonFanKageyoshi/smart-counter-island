@@ -396,6 +396,7 @@ async function init() {
   $('#petHideFullscreen').checked = petCfg.hideOnFullscreen !== false;
   $('#petQuietClass').checked = petCfg.quietInClass !== false;
   $('#petAnnounceClass').checked = petCfg.announceClass !== false;
+  $('#petPerch').checked = !petCfg.perch || petCfg.perch.enabled !== false;
   $('#petAiEnabled').checked = pai.enabled !== false;
   $('#petAiBase').value = pai.baseUrl || 'https://api.deepseek.com';
   $('#petAiModel').value = pai.model || 'deepseek-chat';
@@ -1332,6 +1333,7 @@ function patchPet() {
     hideOnFullscreen: $('#petHideFullscreen').checked,
     quietInClass: $('#petQuietClass').checked,
     announceClass: $('#petAnnounceClass').checked,
+    perch: { enabled: $('#petPerch').checked, autoSec: 120 },
     ai: {
       enabled: $('#petAiEnabled').checked,
       baseUrl: $('#petAiBase').value.trim() || 'https://api.deepseek.com',

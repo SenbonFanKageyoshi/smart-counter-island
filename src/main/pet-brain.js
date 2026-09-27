@@ -11,7 +11,7 @@
 /** 行为枚举：hidden(全屏授课彻底隐藏) | quiet(上课静默) | sleep | idle | walk | talk
     外加三个"瞬态反应"（由事件触发、很短，优先于常态行为）：
     jump(被点击→跳一下) | review(思考/等待回答中→审视) | fail(答错/断网→失败) */
-const ACTIONS = ['hidden', 'quiet', 'sleep', 'idle', 'walk', 'talk', 'jump', 'review', 'fail'];
+const ACTIONS = ['hidden', 'quiet', 'sleep', 'idle', 'walk', 'talk', 'jump', 'review', 'fail', 'perch'];
 
 /** 常态行为权重（安静档：课堂不抢注意力）。cfg.weights 可覆盖。
     ⚠️ 这里只有"随时可以发生"的行为：sleep 不进抽签 —— 否则会正上着课突然睡 2~4 分钟。
@@ -29,6 +29,7 @@ const HOLD_MS = {
   jump: [900, 1300],
   review: [1500, 3000],
   fail: [1500, 2500],
+  perch: [25000, 60000], // 趴在小岛倒计时数字上：一次趴半分钟到一分钟
 };
 
 /** 取某个行为的持续时长（同 seed 结果固定，测试可复现） */
@@ -85,6 +86,7 @@ function nextAction(input, state) {
   if (i.review) return makeChoice('review', now, seed, prevDir);
   if (i.fail) return makeChoice('fail', now, seed, prevDir);
   if (i.talking) return makeChoice('talk', now, seed, 0);
+  if (i.perch) return makeChoice('perch', now, seed, 0); // 趴到小岛倒计时上（趴着也是安静的，上课也允许）
   if (i.inClass) return makeChoice('quiet', now, seed, 0);
 
   // 2) 久无人互动 → 睡觉
