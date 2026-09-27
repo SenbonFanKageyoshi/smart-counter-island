@@ -1,5 +1,5 @@
 'use strict';
-/* 桌宠 AI 层：OpenAI 兼容接口（DeepSeek / 通义 / 智谱 / 豆包…），零依赖（用全局 fetch）。
+/* 教学助手 AI 层：OpenAI 兼容接口（DeepSeek / 通义 / 智谱 / 豆包…），零依赖（用全局 fetch）。
    硬性约束（教学场景）：
      1) **永不开启思考模式** —— 模型名带 reason/thinking 直接拒绝；请求体固定发 thinking:{type:'disabled'}
      2) 单并发 + 每分钟/每日配额 + 相同问题短时缓存，避免被学生连点刷爆额度

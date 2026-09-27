@@ -1,8 +1,8 @@
 'use strict';
-/* 桌宠：独立透明「舞台窗口」+ 窗口内自由走动（60fps）+ 逐像素命中 + 说话气泡 + AI 问答。
+/* 教学助手：独立透明「舞台窗口」+ 窗口内自由走动（60fps）+ 逐像素命中 + 说话气泡 + AI 问答。
    设计要点（都来自 spike 的实测结论）：
      - 不要逐帧 setBounds（实测 1.4–2.7ms/次、只能跑到 ~21/32 fps）：改成舞台窗口，
-       桌宠在窗口内部自由移动，只有走到舞台边缘才整窗平移一格（约 1 次/秒）
+       教学助手在窗口内部自由移动，只有走到舞台边缘才整窗平移一格（约 1 次/秒）
      - 透明区域必须鼠标穿透：1/2 分辨率遮罩画布读 alpha → setIgnoreMouseEvents 只在状态翻转时调用
      - 授课/全屏时彻底隐藏（沿用 island 的全屏判定），上课时间静默站立、不闲聊
      - AI 永不开启思考模式（见 ai.js），未填 key / 断网 / 超配额自动降级到老师预置问答 */
@@ -91,11 +91,8 @@ class Pet {
     }
     const win = this.ensureWindow();
     if (!win) return;
-    try {
-      win.setOpacity(c.opacity);
-    } catch (e) {
-      /* ignore */
-    }
+    // 自检/截图等安静模式下必须保持不可见（直接 setOpacity 会把 quiet 的 0 覆盖掉）
+    require('./quiet').setOpacity(win, c.opacity);
     const b = win.getBounds();
     if (b.width !== c.stage.w || b.height !== c.stage.h) {
       win.setBounds({ x: b.x, y: b.y, width: c.stage.w, height: c.stage.h });
@@ -140,13 +137,13 @@ class Pet {
       },
     }));
     win.setAlwaysOnTop(true, 'screen-saver');
-    win.setIgnoreMouseEvents(true, { forward: true }); // 默认穿透，指针落在桌宠身上才可点
+    win.setIgnoreMouseEvents(true, { forward: true }); // 默认穿透，指针落在教学助手身上才可点
     win.loadFile(path.join(__dirname, '..', 'renderer', 'pet', 'index.html'));
     win.webContents.on('did-finish-load', () => {
       this.ready = true;
       this.applySettings();
       this.loadPack(); // 渲染层就绪后推一次素材包（applySettings 时可能还没加载完）
-      // 排除自身截屏：否则小岛的玻璃会把桌宠当成桌面内容拍进去（重影）
+      // 排除自身截屏：否则小岛的玻璃会把教学助手当成桌面内容拍进去（重影）
       try {
         const buf = win.getNativeWindowHandle();
         const hwnd = buf.readBigUInt64LE ? buf.readBigUInt64LE(0).toString() : String(buf.readUInt32LE(0));
@@ -196,7 +193,7 @@ class Pet {
     const win = this.win;
     if (!win || win.isDestroyed()) return { ok: false };
     const b = win.getBounds();
-    // 多显示器：按窗口当前所在的那块屏算工作区（曾经固定用主屏 → 副屏上的桌宠会被拉回主屏）
+    // 多显示器：按窗口当前所在的那块屏算工作区（曾经固定用主屏 → 副屏上的教学助手会被拉回主屏）
     let wa;
     try {
       wa = screen.getDisplayMatching(b).workArea;
@@ -262,12 +259,21 @@ class Pet {
     return !!(c.quietInClass && this.env.inClass);
   }
 
-  /** 环境是否要求隐藏桌宠 */
+  /** 环境是否要求隐藏教学助手 */
   shouldHide() {
     const c = this.cfg();
     if (!c.enabled) return true;
     if (c.hideOnFullscreen && this.env.fullscreen) return true;
     return false;
+  }
+
+  /** 行为节奏：安静档权重（课堂不抢注意力）+ 睡觉门槛；可在设置里覆盖 */
+  brainCfg() {
+    const b = this.cfg().behavior || {};
+    return {
+      sleepSec: Number(b.sleepSec) || 300,
+      weights: b.weights && typeof b.weights === 'object' ? b.weights : undefined,
+    };
   }
 
   /** 行为拍：算出现在该做什么，交给渲染层执行 */
@@ -285,15 +291,20 @@ class Pet {
     this.setVisible(true);
     const now = Date.now();
     const inClass = this.inClassNow();
-    const decided = brain.decidePetAction({
-      hidden: false,
-      fullscreen: false,
-      inClass,
-      talking: this.talking,
-      sinceInteractMs: now - this.sinceInteract,
-      seed: Math.floor(now / 1000),
-      cfg: { idleSec: 3, walkSec: 6, sleepSec: 300 },
-    });
+    // 带状态的决策：until 之前保持同一行为（旧版每秒重掷 → 看着乱动、忽左忽右）
+    const decided = brain.nextAction(
+      {
+        hidden: false,
+        fullscreen: false,
+        inClass,
+        talking: this.talking,
+        sinceInteractMs: now - this.sinceInteract,
+        seed: Math.floor(now / 1000),
+        cfg: this.brainCfg(),
+      },
+      this.brainState
+    );
+    this.brainState = { action: decided.action, dir: decided.dir, until: decided.until };
     this.action = decided.action;
     this.dir = decided.dir || this.dir;
     this.send('pet:state', { action: this.action, dir: this.dir, inClass: !!inClass, dnd: !!this.env.dnd });
@@ -302,7 +313,7 @@ class Pet {
 
   // ---------------- 说话 ----------------
 
-  /** 直接让桌宠说一句（气泡），用于课堂提醒 / 主动招呼 */
+  /** 直接让教学助手说一句（气泡），用于课堂提醒 / 主动招呼 */
   say(text, opts) {
     const o = opts || {};
     const t = String(text || '').trim();
@@ -317,7 +328,7 @@ class Pet {
     }, holdMs);
   }
 
-  /** 上课铃/下课提醒：桌宠负责"露脸 + 说出来"，通知弹窗由 island 负责 */
+  /** 上课铃/下课提醒：教学助手负责"露脸 + 说出来"，通知弹窗由 island 负责 */
   announce(reminder) {
     const c = this.cfg();
     if (!c.announceClass) return;
@@ -474,7 +485,7 @@ class Pet {
   }
 }
 
-/** 注册桌宠渲染层用到的 IPC（main.js 在启动时调用一次） */
+/** 注册教学助手渲染层用到的 IPC（main.js 在启动时调用一次） */
 function registerPetIpc(pet) {
   ipcMain.handle('pet:ask', async (_e, question) => pet.ask(String(question || '').slice(0, 200)));
   ipcMain.handle('pet:hit', (_e, over) => {
@@ -513,11 +524,106 @@ function registerPetIpc(pet) {
   });
   ipcMain.handle('pet:pack-reload', () => ({ ok: true, state: pet.loadPack() }));
   ipcMain.handle('pet:pack-pick', async () => {
-    const r = await dialog.showOpenDialog({ title: '选择桌宠素材包目录（里面要有 pet.json）', properties: ['openDirectory'] });
+    const r = await dialog.showOpenDialog({ title: '选择教学助手素材包目录（里面要有 pet.json）', properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths.length) return { ok: false };
     pet.settings.update({ pet: { pack: r.filePaths[0] } });
     const state = pet.loadPack();
     return { ok: !!state.ok, dir: r.filePaths[0], state };
+  });
+
+  // —— 素材库：内置清单 + 按需下载 ——
+  // 图集不随安装包发行（258 个共约 500MB，且有 33 个没标再分发许可），
+  // 所以这里是「清单在包里、素材下到用户目录」，原因见 pet-library.js 顶部说明。
+  const petLib = require('./pet-library');
+  const libState = { busy: false, cancel: false, done: 0, total: 0, current: '', failed: [] };
+  const userDataDir = () => app.getPath('userData');
+  const libNotify = () => {
+    const w = require('./config').getWindow();
+    if (w && !w.isDestroyed()) w.webContents.send('pet:lib-progress', Object.assign({}, libState));
+  };
+  const libRows = () => {
+    const c = petLib.readCatalog();
+    const rows = petLib.mergeList(c, petLib.listLocal(userDataDir()));
+    // 内置素材（随包发行的那一个）在列表里也要显示成"已装"，否则用户会以为还得下一遍
+    const builtinDir = petPack.bundledDefaultPack();
+    if (builtinDir) {
+      const id = path.basename(builtinDir);
+      for (const r of rows) {
+        if (r.id !== id) continue;
+        r.installed = true;
+        r.builtin = true;
+        if (!r.dir) r.dir = builtinDir;
+      }
+    }
+    return { ok: true, source: c.source, generatedAt: c.generatedAt, count: c.count, rows, dir: petLib.petsDir(userDataDir()), busy: libState.busy, done: libState.done, total: libState.total, current: libState.current };
+  };
+  ipcMain.handle('pet:lib-list', () => libRows());
+  ipcMain.handle('pet:lib-open', async () => {
+    const dir = petLib.petsDir(userDataDir());
+    fs.mkdirSync(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, reason: err, dir } : { ok: true, dir };
+  });
+  ipcMain.handle('pet:lib-use', (_e, id) => {
+    const row = libRows().rows.find((x) => x.id === String(id || ''));
+    if (!row || !row.dir) return { ok: false, reason: '这个素材还没下载' };
+    // 点「使用」就是要用它：顺手把总开关打开（否则点了没反应）
+    pet.settings.update({ pet: { pack: row.dir, enabled: true } });
+    const state = pet.loadPack();
+    return { ok: !!state.ok, dir: row.dir, state };
+  });
+  ipcMain.handle('pet:lib-download', async (_e, id) => {
+    const c = petLib.readCatalog();
+    const entry = c.pets.find((x) => x.id === String(id || ''));
+    if (!entry) return { ok: false, reason: '清单里没有这个素材' };
+    try {
+      const r = await petLib.downloadOne(entry, userDataDir(), c.ref);
+      pet.loadPack(); // 装完刷新（若正是当前用的那个，立刻生效）
+      return Object.assign({ ok: true }, r);
+    } catch (e) {
+      return { ok: false, reason: String((e && e.message) || e).slice(0, 200) };
+    }
+  });
+  ipcMain.handle('pet:lib-remove', (_e, id) => {
+    const r = petLib.removeOne(userDataDir(), String(id || ''));
+    if (r.ok && pet.cfg().pack === r.dir) pet.settings.update({ pet: { pack: '' } }); // 删的是当前素材 → 回落内置
+    pet.loadPack();
+    return r;
+  });
+  ipcMain.handle('pet:lib-cancel', () => {
+    libState.cancel = true;
+    return { ok: true };
+  });
+  ipcMain.handle('pet:lib-all', async () => {
+    if (libState.busy) return { ok: false, reason: '已经在下载了' };
+    const c = petLib.readCatalog();
+    const local = petLib.listLocal(userDataDir());
+    const todo = c.pets.filter((p) => !local[p.id]);
+    libState.busy = true;
+    libState.cancel = false;
+    libState.done = 0;
+    libState.total = todo.length;
+    libState.failed = [];
+    libNotify();
+    for (const p of todo) {
+      if (libState.cancel) break;
+      libState.current = p.name || p.id;
+      libNotify();
+      try {
+        await petLib.downloadOne(p, userDataDir(), c.ref);
+        libState.done += 1;
+      } catch (e) {
+        libState.failed.push(p.id + '：' + String((e && e.message) || e).slice(0, 80));
+        // 连续失败说明网络/源整体不通：立刻停，别让用户对着 258 个素材干等
+        if (libState.failed.length >= 3) break;
+      }
+      libNotify();
+    }
+    libState.busy = false;
+    libState.current = '';
+    libNotify();
+    pet.loadPack();
+    return { ok: true, done: libState.done, total: libState.total, canceled: !!libState.cancel, failed: libState.failed.slice(0, 10) };
   });
 }
 

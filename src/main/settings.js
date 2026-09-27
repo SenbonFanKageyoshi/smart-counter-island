@@ -190,19 +190,19 @@ const DEFAULTS = {
   manual: {
     mode: 'auto', // 'auto' | 'pinned'(固定显示) | 'hidden'(强制隐藏成细条)
   },
-  // 桌宠：教学助手（课间互动 / 提醒上课 / 答疑）。AI 可选，离线也能用（预置问答）
+  // 教学助手：教学助手（课间互动 / 提醒上课 / 答疑）。AI 可选，离线也能用（预置问答）
   pet: {
     enabled: false,            // 总开关（默认关，老师自己开）
-    stage: { w: 360, h: 300 }, // 舞台窗口尺寸：桌宠在窗口内自由走动，走到边缘才整窗平移一格
+    stage: { w: 360, h: 300 }, // 舞台窗口尺寸：教学助手在窗口内自由走动，走到边缘才整窗平移一格
     pack: '',                  // 素材包目录（留空 = <userData>/pets/示例，可点「生成示例素材包」）
-    scale: 100,                // 桌宠大小（%）
+    scale: 100,                // 教学助手大小（%）
     speed: 100,                // 走动速度（%）
     opacity: 0.95,             // 整体透明度
     x: null,                   // 舞台窗口位置（拖动后记住）
     y: null,
     hideOnFullscreen: true,    // 全屏授课/看视频时彻底隐藏
     quietInClass: true,        // 上课时间静默站立、不闲聊（只答课表与倒计时）
-    announceClass: true,       // 上课/下课提醒时桌宠也出面念一遍
+    announceClass: true,       // 上课/下课提醒时教学助手也出面念一遍
     // AI：OpenAI 兼容接口。**永不开启思考模式**（ai.js 里有硬性防呆）
     ai: {
       enabled: true,
@@ -336,7 +336,7 @@ const MIGRATIONS = [
       }
       // —— 废弃键清理 ——
       // ① version（旧版版本字段，全仓无人读，已由 schemaVersion 取代 —— 不删掉的话它会被 deepMerge 原样保留）
-      // ② weather.announcePet（天气语音/桌宠播报已按需求去掉）③ pet.voice（更早版本的语音合成残留，无人读取）
+      // ② weather.announcePet（天气语音/教学助手播报已按需求去掉）③ pet.voice（更早版本的语音合成残留，无人读取）
       if (cache.version != null) {
         delete cache.version;
         changed = true;
@@ -349,11 +349,8 @@ const MIGRATIONS = [
         delete cache.pet.voice;
         changed = true;
       }
-      // 桌宠未开发完成、暂停使用：强制关掉（页面已灰置，这里保证它真的不跑）
-      if (cache.pet && cache.pet.enabled !== false) {
-        cache.pet.enabled = false;
-        changed = true;
-      }
+      // （2026-09-27 删除）以前这里强制关掉"桌宠"：那时功能未完成、页面灰置。
+      // 现在它已改名「教学助手」并正式上线，不能再无条件关掉用户的选择。
       // —— 「计时坞」不再是可常驻的手动模式 ——
       // 之前长按灵动岛进入坞时会写成 manual.mode = 'dock' 并被持久化，
       // 于是以后每次启动都直接停在计时坞（用户反馈："程序初始状态应该是灵动岛，不是计时坞"）。

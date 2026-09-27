@@ -29,4 +29,18 @@ function quiet(win) {
   return win;
 }
 
-module.exports = { QUIET, quiet };
+/**
+ * 安静模式下改窗口透明度：运行时按设置调透明度的地方（教学助手就是这样）必须走这里 ——
+ * 直接 win.setOpacity(v) 会把 quiet 设的 0 覆盖掉，跑一次自检屏幕上就会冒出教学助手。
+ */
+function setOpacity(win, v) {
+  if (!win) return;
+  try {
+    if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return;
+    win.setOpacity(QUIET ? 0 : v);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+module.exports = { QUIET, quiet, setOpacity };

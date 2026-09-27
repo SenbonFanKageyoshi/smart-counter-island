@@ -343,7 +343,9 @@
     return true;
   }
 
-  /** 背景亮度：把视频缩到 32×32 再取像素平均（GPU 缩放 + 4KB 回读，代价可忽略） */
+  /** 背景亮度 + 近黑占比：把视频缩到 16×16 再取像素（GPU 缩放 + 1KB 回读，代价可忽略）。
+      只取「胶囊」那块 —— 以前取整个窗口，四周透明留白会把背景稀释掉。
+      白边判据用近黑占比而不是平均值（交界处平均值会卡在滞回带里）。 */
   function updateBrightness() {
     const now = Date.now();
     if (now - state.lastBrightnessAt < 400) return;
@@ -359,22 +361,38 @@
       const ctx = c.getContext('2d', { willReadFrequently: true });
       if (!ctx || !v.videoWidth) return;
       const g = state.geom;
-      // 只取小岛背后那一小块（与窗口等大）
-      const sx = Math.max(0, (g.win.x - g.disp.x) * g.scale * (v.videoWidth / (g.disp.w * g.scale)));
-      const sy = Math.max(0, (g.win.y - g.disp.y) * g.scale * (v.videoHeight / (g.disp.h * g.scale)));
-      const sw = Math.max(1, g.win.width * g.scale * (v.videoWidth / (g.disp.w * g.scale)));
-      const sh = Math.max(1, g.win.height * g.scale * (v.videoHeight / (g.disp.h * g.scale)));
+      const scale = g.scale || 1;
+      // DIP → 视频像素：屏幕 DIP 宽对应 videoWidth（scale 在两边抵消，写清楚免得再算错）
+      const vkx = v.videoWidth / Math.max(1, g.disp.w);
+      const vky = v.videoHeight / Math.max(1, g.disp.h);
+      // 胶囊矩形（屏幕 DIP）：窗口左上 + 胶囊在窗口内的偏移；宽高取画布（= 胶囊，物理像素）÷ scale
+      const px = g.win.x + (g.padX || 0);
+      const py = g.win.y + (g.padY || 0);
+      const pw = Math.max(1, (state.rect ? state.rect.w : 0) / scale);
+      const ph = Math.max(1, (state.rect ? state.rect.h : 0) / scale);
+      const sx = Math.max(0, (px - g.disp.x) * vkx);
+      const sy = Math.max(0, (py - g.disp.y) * vky);
+      const sw = Math.max(1, pw * vkx);
+      const sh = Math.max(1, ph * vky);
       ctx.drawImage(v, sx, sy, sw, sh, 0, 0, 16, 16);
       const data = ctx.getImageData(0, 0, 16, 16).data;
       let sum = 0;
+      let dark = 0;
+      let n = 0;
       for (let i = 0; i < data.length; i += 4) {
-        sum += (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+        const lum = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+        sum += lum;
+        if (lum < 0.25) dark += 1;
+        n += 1;
       }
-      const b = sum / (data.length / 4);
+      const b = n ? sum / n : 0.5;
+      const dr = n ? dark / n : 0;
       state.lastBrightnessComputed = b;
-      if (Math.abs(b - state.lastBrightness) >= 0.012) {
+      state.lastDarkComputed = dr;
+      if (Math.abs(b - state.lastBrightness) >= 0.012 || Math.abs(dr - (state.lastDarkRatio || 0)) >= 0.03) {
         state.lastBrightness = b;
-        if (typeof state.onBrightness === 'function') state.onBrightness(b);
+        state.lastDarkRatio = dr;
+        if (typeof state.onBrightness === 'function') state.onBrightness(b, dr);
       }
     } catch (e) {
       state.brightnessErr = String(e && e.message ? e.message : e);

@@ -386,7 +386,7 @@ async function init() {
   renderSchedule();
   updateSchedPreview();
 
-  // 桌宠
+  // 教学助手
   const petCfg = S.pet || {};
   const pai = petCfg.ai || {};
   $('#petEnabled').checked = petCfg.enabled === true;
@@ -409,6 +409,7 @@ async function init() {
   $('#petPack').value = petCfg.pack || '';
   refreshPetStatus();
   refreshPackStatus();
+  refreshPetLib();
 
   // 定时任务
   renderTasks();
@@ -1300,7 +1301,7 @@ function patchClassNotify() {
   $(sel).addEventListener('change', patchClassNotify)
 );
 
-/* ---------- 桌宠 ---------- */
+/* ---------- 教学助手 ---------- */
 
 /** 把预置问答文本框（一行一条「关键词 | 回答」）解析成 qa 数组 */
 function parseQa(text) {
@@ -1358,14 +1359,14 @@ function patchPet() {
   if (el.tagName === 'INPUT' && el.type === 'text') el.addEventListener('input', () => clearTimeout(el._pt) || (el._pt = setTimeout(patchPet, 500)));
 });
 
-/** 桌宠状态行：开关 / 模型 / 用量统计 */
+/** 教学助手状态行：开关 / 模型 / 用量统计 */
 async function refreshPetStatus() {
   const el = $('#petStatus');
   if (!el || !window.config.pet) return;
   try {
     const s = await window.config.pet.status();
     if (!s.enabled) {
-      el.textContent = '桌宠未启用';
+      el.textContent = '教学助手未启用';
       return;
     }
     const st = s.stats || {};
@@ -1398,7 +1399,7 @@ if (petSayBtn) {
   });
 }
 
-/* ---------- 桌宠素材包 ---------- */
+/* ---------- 教学助手素材包 ---------- */
 
 /** 状态行：目录 / 清单是否可用 / 各状态帧数 / 错误 */
 async function refreshPackStatus() {
@@ -1446,6 +1447,128 @@ if ($('#petPack')) {
     patch({ pet: { pack: $('#petPack').value.trim() } }).then(refreshPackStatus);
   });
 }
+
+/* ---------- 素材库（教学助手形象：清单随包发行，图集按需下载） ---------- */
+let petLibRows = [];
+
+function libRowHtml(r) {
+  const size = r.bytes ? ' · ' + (r.bytes / 1048576).toFixed(1) + ' MB' : '';
+  const lic = r.license ? String(r.license).slice(0, 30) : '未标注许可';
+  const badges = [];
+  if (r.builtin) badges.push('<span class="lib-badge on-badge">内置</span>');
+  if (!r.installed) badges.push('<span class="lib-badge">未下载</span>');
+  if (r.version === 2) badges.push('<span class="lib-badge">v2</span>');
+  const act = r.installed
+    ? '<button class="btn small" data-lib-use="' + esc(r.id) + '">使用</button>' +
+      (r.builtin ? '' : '<button class="btn small ghost" data-lib-del="' + esc(r.id) + '">删除</button>')
+    : '<button class="btn small" data-lib-get="' + esc(r.id) + '">下载</button>';
+  return (
+    '<div class="lib-row' + (r.installed ? ' on' : '') + '">' +
+    '<div class="lib-main"><b>' + esc(r.name) + '</b>' +
+    '<span class="lib-sub">' + esc(r.author || '未署名') + ' · ' + esc(lic) + size + '</span></div>' +
+    '<div class="lib-act">' + badges.join('') + act + '</div></div>'
+  );
+}
+
+function renderPetLib() {
+  const box = $('#petLibList');
+  if (!box) return;
+  const q = ($('#petLibSearch') ? $('#petLibSearch').value : '').trim().toLowerCase();
+  const rows = petLibRows.filter((r) => !q || (r.name + ' ' + r.id + ' ' + r.author + ' ' + r.license).toLowerCase().indexOf(q) >= 0);
+  box.innerHTML = rows.length ? rows.map(libRowHtml).join('') : '<p class="small" style="padding:8px 10px">没有匹配的素材</p>';
+}
+
+function showLibProgress(p) {
+  const el = $('#petLibProgress');
+  if (!el) return;
+  const d = p || {};
+  const all = $('#petLibAll');
+  if (d.busy) {
+    el.textContent = '下载中 ' + d.done + '/' + d.total + '：' + (d.current || '') + '（可以关掉这一页，下载会继续）';
+    if (all) all.textContent = '取消下载';
+    return;
+  }
+  const miss = petLibRows.filter((r) => !r.installed);
+  const mb = (miss.reduce((s, r) => s + (r.bytes || 0), 0) / 1048576).toFixed(0);
+  el.textContent = '素材库共 ' + petLibRows.length + ' 个，已装 ' + (petLibRows.length - miss.length) + ' 个' + (miss.length ? '，未下载约 ' + mb + ' MB' : '（全部就绪）');
+  if (all) all.textContent = '全部下载';
+}
+
+async function refreshPetLib(progress) {
+  if (!window.config.pet || !window.config.pet.libList) return;
+  try {
+    const s = await window.config.pet.libList();
+    petLibRows = s.rows || [];
+    renderPetLib();
+    showLibProgress(progress || { busy: s.busy, done: s.done, total: s.total, current: s.current });
+  } catch (e) {
+    if ($('#petLibProgress')) $('#petLibProgress').textContent = '素材清单读取失败';
+  }
+}
+
+if ($('#petLibList')) {
+  $('#petLibList').addEventListener('click', async (ev) => {
+    const t = ev.target;
+    if (!t || !t.dataset) return;
+    if (t.dataset.libGet) {
+      t.disabled = true;
+      t.textContent = '下载中…';
+      const r = await window.config.pet.libDownload(t.dataset.libGet);
+      if (!r || !r.ok) toast('下载失败：' + ((r && r.reason) || '未知原因'));
+      await refreshPetLib();
+      refreshPackStatus();
+      return;
+    }
+    if (t.dataset.libUse) {
+      const r = await window.config.pet.libUse(t.dataset.libUse);
+      toast(r && r.ok ? '已切换形象' : '切换失败：' + ((r && r.reason) || '未知原因'));
+      await refreshPetLib();
+      refreshPackStatus();
+      return;
+    }
+    if (t.dataset.libDel) {
+      const r = await window.config.pet.libRemove(t.dataset.libDel);
+      if (r && r.ok) toast('已删除素材');
+      await refreshPetLib();
+      refreshPackStatus();
+    }
+  });
+}
+if ($('#petLibSearch')) $('#petLibSearch').addEventListener('input', renderPetLib);
+if ($('#petLibAll')) {
+  $('#petLibAll').addEventListener('click', async () => {
+    if ($('#petLibAll').textContent.indexOf('取消') >= 0) {
+      await window.config.pet.libCancel();
+      toast('正在取消…');
+      return;
+    }
+    const miss = petLibRows.filter((r) => !r.installed);
+    if (!miss.length) {
+      toast('素材都已经下载好了');
+      return;
+    }
+    const mb = (miss.reduce((s, r) => s + (r.bytes || 0), 0) / 1048576).toFixed(0);
+    if (!window.confirm('要下载全部 ' + miss.length + ' 个素材吗？约 ' + mb + ' MB，会存到素材目录里。')) return;
+    showLibProgress({ busy: true, done: 0, total: miss.length, current: '准备中…' });
+    const r = await window.config.pet.libDownloadAll();
+    await refreshPetLib();
+    refreshPackStatus();
+    toast(r && r.ok ? '下载完成 ' + r.done + '/' + r.total + (r.failed && r.failed.length ? '，失败 ' + r.failed.length + ' 个' : '') : '下载失败：' + ((r && r.reason) || '未知原因'));
+  });
+}
+if ($('#petLibOpen')) {
+  $('#petLibOpen').addEventListener('click', async () => {
+    const r = await window.config.pet.libOpenDir();
+    if (r && r.ok && $('#petLibProgress')) $('#petLibProgress').textContent = '素材目录：' + r.dir;
+  });
+}
+if (window.config.pet && window.config.pet.onLibProgress) {
+  window.config.pet.onLibProgress((d) => {
+    showLibProgress(d);
+    if (d && !d.busy) refreshPetLib();
+  });
+}
+
 
 /* ---------- 壁纸 ---------- */
 

@@ -399,12 +399,14 @@ body[data-glass="capture"] .z-unit {
   border-radius: 50%;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
-/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content） */
+/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content）。
+   只在形态切换时播（#content.in-anim）：以前直接挂在 #content > * 上，节点一被重建就重播，
+   而细条每次 render 都是整块重建 DOM —— 那就是文字「莫名其妙闪一下」的来源。 */
 @keyframes sci-content-in {
   from { opacity: 0; translate: 0 4px; }
   to   { opacity: 1; translate: 0 0; }
 }
-body[data-notch="1"] #content > * { animation: sci-content-in 0.3s ease-out both; }
+body[data-notch="1"] #content.in-anim > * { animation: sci-content-in 0.3s ease-out both; }
 /* split 布局：图标在传感器左侧、数字在右侧，中间那条空隙正好等于禁区宽度 + 左右空隙，
    整行居中 → 内容紧挨着传感器，不会一个贴最左一个贴最右，也不会被裁掉。
    ⚠️ 两瓣必须 flex:0 0 auto（永不压缩）：曾经给它们加 min-width:0 + flex-shrink:1 当"兜底"，
@@ -1055,12 +1057,14 @@ body[data-glass="capture"] .z-unit {
   border-radius: 50%;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
 }
-/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content） */
+/* 内容出场：0.3s 淡入 + 4px 上移归位（规格 animation.content）。
+   只在形态切换时播（#content.in-anim）：以前直接挂在 #content > * 上，节点一被重建就重播，
+   而细条每次 render 都是整块重建 DOM —— 那就是文字「莫名其妙闪一下」的来源。 */
 @keyframes sci-content-in {
   from { opacity: 0; translate: 0 4px; }
   to   { opacity: 1; translate: 0 0; }
 }
-body[data-notch="1"] #content > * { animation: sci-content-in 0.3s ease-out both; }
+body[data-notch="1"] #content.in-anim > * { animation: sci-content-in 0.3s ease-out both; }
 /* split 布局：图标在传感器左侧、数字在右侧，中间那条空隙正好等于禁区宽度 + 左右空隙，
    整行居中 → 内容紧挨着传感器，不会一个贴最左一个贴最右，也不会被裁掉。
    ⚠️ 两瓣必须 flex:0 0 auto（永不压缩）：曾经给它们加 min-width:0 + flex-shrink:1 当"兜底"，

@@ -1,0 +1,15 @@
+纳西妲（Nahida）· 教学助手素材
+=====================================
+
+作者：legeling（https://github.com/legeling）
+来源：https://github.com/legeling/awesome-codex-pet  →  pets/nahida--lingxiaotian
+许可：CC BY-NC 4.0（署名 — 非商业性使用 4.0 国际）
+      允许在保留署名、且不用于商业用途的前提下使用与再分发。
+
+说明：本素材是《原神》纳西妲风格的同人像素作品，角色与相关知识产权归米哈游（miHoYo）所有；
+      本程序与素材作者均与权利方无关联。请仅用于非商业场景，并保留本署名文件。
+
+图集：spritesheet.webp 1536×1872（8 列 × 9 行，每格 192×208）
+      行映射（官方 animation-rows.md）：0 idle / 1 向右跑 / 2 向左跑 / 3 挥手 /
+      4 跳跃 / 5 失败 / 6 等待 / 7 原地跑 / 8 审视。
+      本程序用到：idle→行0、walk→行1、talk→行3、sleep→行6。

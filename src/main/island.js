@@ -149,6 +149,44 @@ const perfProbe = {
  * 纯决策函数：由输入推导目标状态（可单测）。
  * 返回 null 表示「保持当前状态」（光标悬停/手动保持期内，避免频繁切换）。
  */
+/** 「明显偏暗」的判定门限（Rec.601 亮度 0~1）：低于它就算近黑像素 */
+const DARK_LUMA = 0.25;
+
+/**
+ * 矩形区域的平均亮度 + 近黑像素占比（纯函数，自检直接喂 BGRA 位图）。
+ *   bitmap / sizeW / sizeH：BGRA 位图（Electron toBitmap 的布局）
+ *   rect：要统计的矩形（屏幕 DIP，通常是胶囊那块）；origin：位图左上角对应的屏幕 DIP
+ *   rx / ry：位图宽高 ÷ 工作区宽高
+ * 白边判据用「近黑占比」而不是平均值：小岛压在明暗交界处时平均值会卡在滞回带里不动，
+ * 占比才回答得了"这块背景是不是大部分黑"。
+ */
+function sampleRectStats(bitmap, sizeW, sizeH, rect, origin, rx, ry) {
+  const fallback = { brightness: 0.5, darkRatio: 0 };
+  const x0 = Math.max(0, Math.floor((rect.x - origin.x) * rx));
+  const y0 = Math.max(0, Math.floor((rect.y - origin.y) * ry));
+  const w = Math.min(sizeW - x0, Math.ceil(rect.w * rx));
+  const h = Math.min(sizeH - y0, Math.ceil(rect.h * ry));
+  if (w <= 0 || h <= 0) return fallback;
+  let sum = 0;
+  let dark = 0;
+  let n = 0;
+  // 采样步长随区域大小自适应：小图（快路径亮度）逐像素，大图稀疏采样，
+  // 采样点数量基本恒定（≈ 60×60），保证平均值稳定且开销可控
+  const step = Math.max(1, Math.round(Math.max(w, h) / 60));
+  for (let y = y0; y < y0 + h; y += step) {
+    for (let x = x0; x < x0 + w; x += step) {
+      const i = (y * sizeW + x) * 4;
+      if (i + 2 >= bitmap.length) continue;
+      const lum = (0.299 * bitmap[i + 2] + 0.587 * bitmap[i + 1] + 0.114 * bitmap[i]) / 255;
+      sum += lum;
+      if (lum < DARK_LUMA) dark += 1;
+      n += 1;
+    }
+  }
+  if (n === 0) return fallback;
+  return { brightness: sum / n, darkRatio: dark / n };
+}
+
 function decideState(input) {
   const {
     idleMs, occluded, maximized, overPill, state,
@@ -768,7 +806,10 @@ class Island {
     }
     this.applyRegion();
     this.pushGeomIfChanged(true);
-    this.send('island:anim', { on: false });
+    // instant：这不是动画收尾，不会有新截图到来。渲染层收到「动画结束」本来会进入「等新图」
+    //（等不到就空 800ms 靠兜底恢复）—— 用户恰好那一刻进大窗口就是「第一次没有玻璃特效」。
+    // 这条路径本来就不隐藏玻璃（宽度微调不该有动画），必须带上 instant。
+    this.send('island:anim', { on: false, instant: true });
   }
 
   /** 按状态计算窗口边界（每种状态独立位置配置；通知形态尺寸随内容自适应） */
@@ -1274,6 +1315,27 @@ class Island {
     const wa = disp.workArea;
     const db = disp.bounds;
     const b = this.win.getBounds();
+
+    // —— 前台窗口一变，立刻补一次背景亮度 ——
+    // 白边（背景近黑时那 1px 描边）跟着背景明暗走，而亮度靠截屏采样：常规节拍在细条上要 2.5 秒
+    //（细条 ×1.6 倍率）。实测一次截屏 ~175ms 且**与图大小无关**（成本在采集服务），所以不能靠
+    // "提高采样频率"提速 —— 只能事件触发。切 PPT / 切应用 / 回桌面正是白边最该迅速响应的场景：
+    // 这里只在切换那一刻多抓一次，常态开销不变。
+    // GPU 液态玻璃不在这里补采：亮度由渲染层从视频流里算，主进程截屏只会跟它抢 DXGI 复制会话
+    //（实测抢崩过：连续 getSources 让连续取流失败，T18/T21/T22/T23 全红）。
+    if (p && p.pid && this.effectiveGlassMode() !== 'webgl') {
+      const fgKey = p.pid + '|' + (typeof p.fgClass === 'string' ? p.fgClass : '');
+      if (this.lastFgKey === undefined || this.lastFgKey === null) this.lastFgKey = fgKey; // 首帧只记基线
+      else if (this.lastFgKey !== fgKey) {
+        this.lastFgKey = fgKey;
+        // 节流 ≥800ms：一次截屏 ~175ms，密集切换（拖窗口、连开窗口）时不该每换一次就抓一次
+        const now = Date.now();
+        if (!this.lastFgCapAt || now - this.lastFgCapAt >= 800) {
+          this.lastFgCapAt = now;
+          this.captureOnce().catch(() => {});
+        }
+      }
+    }
 
     // —— 全屏授课检测（真全屏盖住任务栏区域；最大化窗口不会）——
     let occluded = false;
@@ -1997,9 +2059,9 @@ class Island {
       if (!needGlass) {
         // —— 快路径：只算亮度（小图） ——
         perfCapture.s.fastFrames += 1;
-        const brightness = this.computeBrightness(img, b, disp, rx, ry);
-        this.lastBrightness = brightness;
-        this.sendBrightness(brightness);
+        const stat = this.sampleBackdrop(img, this.pillRectOnScreen(b, disp), disp, rx, ry);
+        this.lastBrightness = stat.brightness;
+        this.sendBrightness(stat.brightness, stat.darkRatio);
         this.glassFail = 0;
         return;
       }
@@ -2034,9 +2096,9 @@ class Island {
       const cropDisp = { bounds: { x: cropLeftDIP, y: cropTopDIP } };
       const crx = cropped.getSize().width / ((cx1 - cx0) / rx);
       const cry = cropped.getSize().height / ((cy1 - cy0) / ry);
-      const brightness = this.computeBrightness(cropped, b, cropDisp, crx, cry);
-      this.lastBrightness = brightness;
-      this.sendBrightness(brightness);
+      const stat = this.sampleBackdrop(cropped, this.pillRectOnScreen(b, disp), cropDisp, crx, cry);
+      this.lastBrightness = stat.brightness;
+      this.sendBrightness(stat.brightness, stat.darkRatio);
 
       // 背景没变就不重新编码/下发（PNG 编码 + 大字符串 IPC 是这条链路最贵的部分）。
       // 指纹取自裁剪图位图的首/中/尾采样 + 长度，桌面静止时命中率很高。
@@ -2070,42 +2132,37 @@ class Island {
     }
   }
 
-  /** 下发背景亮度：变化很小时跳过（文字颜色有滞回门限，微小抖动无意义，省 IPC 与重绘） */
-  sendBrightness(brightness) {
-    if (this.lastBrightnessSent >= 0 && Math.abs(brightness - this.lastBrightnessSent) < 0.012) return;
+  /** 下发背景亮度 + 近黑占比：两者变化都很小时跳过（渲染层有滞回门限，微小抖动无意义，省 IPC 与重绘） */
+  sendBrightness(brightness, darkRatio) {
+    const dr = typeof darkRatio === 'number' ? darkRatio : 0;
+    const sameB = this.lastBrightnessSent >= 0 && Math.abs(brightness - this.lastBrightnessSent) < 0.012;
+    const sameD = Math.abs(dr - (this.lastDarkSent || 0)) < 0.03;
+    if (sameB && sameD) return;
     this.lastBrightnessSent = brightness;
-    this.send('island:brightness', { brightness });
+    this.lastDarkSent = dr;
+    this.send('island:brightness', { brightness, darkRatio: dr });
   }
 
-  /** 从缩略图计算小岛背后区域的平均亮度（0-1） */
-  computeBrightness(img, b, disp, rx, ry) {
+  /** 小岛胶囊在屏幕上的矩形（DIP）：窗口四周各留 PAD 的透明边距，胶囊尺寸取自 pillSize
+      （通知形态的高度随内容自适应，也从 pillSize 来 —— 与 CSS 同源，不另算一套公式）。
+      亮度只该看「小岛压在什么颜色上」：以前统计整个窗口，四周那圈透明留白会把背景稀释掉。 */
+  pillRectOnScreen(b, disp) {
+    const s = this.pillSize(this.state, disp || this.islandDisplay());
+    return {
+      x: b.x + PAD,
+      y: b.y + PAD,
+      w: Math.max(1, Math.round(s.w)),
+      h: Math.max(1, Math.round(s.h)),
+    };
+  }
+
+  /** 从缩略图统计「胶囊那块」的背景：平均亮度 + 近黑像素占比（都 0-1）；失败给中性值 */
+  sampleBackdrop(img, rect, origin, rx, ry) {
     try {
       const size = img.getSize();
-      const bitmap = img.toBitmap(); // BGRA
-      const x0 = Math.max(0, Math.floor((b.x - disp.bounds.x) * rx));
-      const y0 = Math.max(0, Math.floor((b.y - disp.bounds.y) * ry));
-      const w = Math.min(size.width - x0, Math.ceil(b.width * rx));
-      const h = Math.min(size.height - y0, Math.ceil(b.height * ry));
-      if (w <= 0 || h <= 0) return 0.5;
-      let sum = 0;
-      let n = 0;
-      // 采样步长随区域大小自适应：小图（快路径亮度）逐像素，大图稀疏采样，
-      // 采样点数量基本恒定（≈ 60×60），保证平均值稳定且开销可控
-      const step = Math.max(1, Math.round(Math.max(w, h) / 60));
-      for (let y = y0; y < y0 + h; y += step) {
-        for (let x = x0; x < x0 + w; x += step) {
-          const i = (y * size.width + x) * 4;
-          if (i + 2 >= bitmap.length) continue;
-          const bval = bitmap[i];
-          const g = bitmap[i + 1];
-          const r = bitmap[i + 2];
-          sum += (0.299 * r + 0.587 * g + 0.114 * bval) / 255;
-          n += 1;
-        }
-      }
-      return n > 0 ? sum / n : 0.5;
+      return sampleRectStats(img.toBitmap(), size.width, size.height, rect, origin, rx, ry);
     } catch (e) {
-      return 0.5;
+      return { brightness: 0.5, darkRatio: 0 };
     }
   }
 
@@ -2341,6 +2398,7 @@ class Island {
 
 const island = new Island();
 island.decideState = decideState; // 供测试
+island.sampleRectStats = sampleRectStats; // 供测试（白边判据的纯函数）
 island.perfAnim = perfAnim; // 供 --perf 采集
 island.perfCapture = perfCapture;
 island.perfProbe = perfProbe;

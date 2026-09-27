@@ -35,7 +35,7 @@
   <div class="nav-cap">外观</div>
   <button class="tab" data-tab="display">显示效果</button>
   <button class="tab" data-tab="wallpaper">壁纸</button>
-  <button class="tab" data-tab="pet">桌宠</button>
+  <button class="tab" data-tab="pet">教学助手</button>
   <div class="nav-cap">行为与系统</div>
   <button class="tab" data-tab="smart">智能行为</button>
   <button class="tab" data-tab="advanced">高级</button>
@@ -619,15 +619,10 @@
     </div>
   </section>
 
-  <!-- ============ 桌宠 ============ -->
-  <section id="tab-pet" class="tabpage pet-paused" data-paused="1">
-    <!-- 桌宠未开发完成、暂停使用：整页灰置 + 不可交互，只留这条提示醒目 -->
-    <div class="paused-note">
-      <b>桌宠功能暂停使用</b>
-      <span>该功能尚未开发完成，暂时关闭。下面的设置项会保留，但当前版本不生效。</span>
-    </div>
+  <!-- ============ 教学助手 ============ -->
+  <section id="tab-pet" class="tabpage">
     <div class="field">
-      <label class="inline"><input type="checkbox" id="petEnabled"> 启用桌宠（课间互动 / 提醒上课 / 答疑）</label>
+      <label class="inline"><input type="checkbox" id="petEnabled"> 启用教学助手（课间互动 / 提醒上课 / 答疑）</label>
     </div>
     <div class="field">
       <label>大小（%）</label>
@@ -648,23 +643,34 @@
       <label class="inline"><input type="checkbox" id="petQuietClass"> 上课时间静默（只答课表与倒计时）</label>
     </div>
     <div class="field">
-      <label class="inline"><input type="checkbox" id="petAnnounceClass"> 上课/下课提醒时桌宠也念一遍</label>
+      <label class="inline"><input type="checkbox" id="petAnnounceClass"> 上课/下课提醒时教学助手也念一遍</label>
     </div>
 
-    <h3 class="sec-title">素材包（桌宠形象）</h3>
-    <div class="field">
-      <label>素材包目录（里面要有 pet.json；留空 = 程序数据目录下的 pets\示例）</label>
-      <div class="pos-row">
-        <input type="text" id="petPack" placeholder="留空 = 默认目录" style="flex:1">
-        <button class="btn" id="petPackOpen">打开文件夹</button>
-        <button class="btn" id="petPackPick">浏览…</button>
-      </div>
-      <div class="pos-row" style="margin-top:8px">
-        <button class="btn" id="petPackSample">生成示例素材包</button>
-        <button class="btn" id="petPackReload">重新加载</button>
-      </div>
-      <p class="small" id="petPackStatus"></p>
+    <h3 class="sec-title">形象（素材库）</h3>
+    <div class="lib-bar">
+      <input type="text" id="petLibSearch" placeholder="搜索名字 / 作者 / 许可">
+      <button class="btn" id="petLibAll">全部下载</button>
+      <button class="btn" id="petLibOpen">打开素材目录</button>
     </div>
+    <p class="small" id="petLibProgress">素材库：正在读取清单…</p>
+    <div class="lib-list" id="petLibList"></div>
+
+    <details class="lib-adv">
+      <summary>高级：手动指定素材包目录 / 生成示例素材包</summary>
+      <div class="field">
+        <label>素材包目录（里面要有 pet.json；留空 = 用内置素材）</label>
+        <div class="pos-row">
+          <input type="text" id="petPack" placeholder="留空 = 内置素材" style="flex:1">
+          <button class="btn" id="petPackOpen">打开文件夹</button>
+          <button class="btn" id="petPackPick">浏览…</button>
+        </div>
+        <div class="pos-row" style="margin-top:8px">
+          <button class="btn" id="petPackSample">生成示例素材包</button>
+          <button class="btn" id="petPackReload">重新加载</button>
+        </div>
+        <p class="small" id="petPackStatus"></p>
+      </div>
+    </details>
 
     <h3 class="sec-title">答疑（AI）</h3>
     <div class="field">

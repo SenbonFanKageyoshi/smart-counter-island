@@ -171,7 +171,28 @@ function applyGeom(g) {
   window.GlassWebGL.setGeom(Object.assign({}, g, { padX: pr.left, padY: pr.top }));
 }
 
+/** 内容出场动画（规格 animation.content）只在「状态切换」时播一次。
+    它以前挂在 #content > * 上：细条/横幅每次 render 都整块重建 DOM，节点一换动画就重播
+    （0.3s 淡入 + 上移 4px）→ 用户看到的就是"文字莫名其妙闪一下"。
+    改成状态变化时给 #content 挂 .in-anim，动画结束（或 400ms 兜底）后摘掉，重建不再触发。 */
+let contentInTimer = null;
+function playContentIn() {
+  const el = $('#content');
+  if (!el) return;
+  el.classList.remove('in-anim');
+  void el.offsetWidth; // 强制重排：移除后重新挂上才会重播同名动画
+  el.classList.add('in-anim');
+  clearTimeout(contentInTimer);
+  contentInTimer = setTimeout(() => el.classList.remove('in-anim'), 400);
+}
+(function bindContentInEnd() {
+  const el = $('#content');
+  if (el) el.addEventListener('animationend', () => el.classList.remove('in-anim'));
+})();
+
 window.island.onState((s) => {
+  // 形态没变就不播入场动画：状态推送比"内容换一茬"频繁得多（宽度对账、天气 chip 刷新等）
+  const prevState = document.body.dataset.state;
   state = s.state;
   weather = s.weather || null; // 天气载荷（chip 与图标动画；细条不渲染 chip，保持 116 宽几何）
   // 先记下禁区规格：render() 里的内容布局要用它（applyCameraNotch 里再算黑底与禁区矩形）
@@ -187,6 +208,7 @@ window.island.onState((s) => {
   dockEdit = !!s.dockEdit; // 计时坞快捷添加态（长按灵动岛进入）
   if (dockEditChanged || dockMenuChanged) setTimeout(() => { try { render(); } catch (e) { /* ignore */ } }, 0);
   document.body.dataset.state = state;
+  if (state !== prevState) playContentIn();
   $('#pill').style.opacity = s.opacity;
   // GPU 玻璃需要窗口/显示器几何（画布像素 ↔ 屏幕物理像素的映射）
   applyGeom(s.geom);
@@ -287,8 +309,10 @@ window.island.onGlass((g) => {
   if (glassWaiting) {
     glassWaiting = false;
     clearTimeout(glassWaitingTimer);
-    updateGlassVisibility();
   }
+  // 新图到达必须无条件重估：旧代码只在「等新图」时重估，于是液态滤镜会停在上一份几何上
+  //（表现：玻璃只剩 CSS 兜底模糊，折射/边缘高光全没有 —— 就是"大窗口要进两次才有特效"）
+  updateGlassVisibility();
 });
 
 // 动画/尺寸变化后、新截屏到达前的等待标记：期间不显示旧位置玻璃图（避免错位"方形模糊"帧）
@@ -313,8 +337,8 @@ let glNoGeomCheck = false; // 测试环境：跳过画布/窗口几何一致性�
 /** 启动 GPU 液态玻璃取流 + 着色器（采集精度在取流时确定，所以改精度要重开） */
 function startGlassStream() {
   return window.GlassWebGL.start(document.getElementById('glass-gl'), {
-    onBrightness: (b) => {
-      applyBrightness(b);
+    onBrightness: (b, darkRatio) => {
+      applyBrightness(b, darkRatio);
       // 同步回主进程：诊断/测试需要读到真实亮度（webgl 模式下主进程已不再截屏）
       if (window.island.reportGlass) window.island.reportGlass({ type: 'brightness', brightness: b });
     },
@@ -367,10 +391,13 @@ window.island.onAnim((d) => {
       window.GlassWebGL.redraw();
       return;
     }
+    // instant = 主进程只是"立即改了尺寸"（applyBoundsNow，无动画）：这条路径不抓新图，
+    // 进入"等新图"会让玻璃干等 800ms 兜底才回来 —— 用户恰好那一刻进大窗口就是"没有特效"。
+    const instant = !!(d && d.instant);
     // 动画结束：窗口尺寸已稳定；若当前应显示玻璃，进入"等新图"状态（新截图由
     // 主进程在动画结束后立即抓取推送），同时重建滤镜资源
     const showGlass = glassShown();
-    if (showGlass) setGlassWaiting(true);
+    if (showGlass && !instant) setGlassWaiting(true);
     updateGlassVisibility();
     scheduleLiquidGlass();
   }
@@ -690,8 +717,14 @@ window.addEventListener('resize', () => {
 let bgDark = false; // 白边状态（滞回记忆，防闪烁）
 let inkDark = false; // 深色文字状态（滞回记忆：亮暗背景在阈值附近波动时不反复闪字）
 
-/** 背景亮度 → 文字色/描边适配（CPU 路径由主进程推送，GPU 路径由 WebGL 模块回传） */
-function applyBrightness(b) {
+/** 白边判据：背景里「近黑像素」占比 ≥ ON 就加白边、≤ OFF 就撤，中间滞回不动。
+    为什么不用平均亮度：小岛压在明暗交界处（左边黑右边白）时平均值会卡在 0.15~0.25 那条带里，
+    白边既不出现也不消失 —— 看起来就是"没反应"。占比直接回答"这块背景是不是大部分黑"。 */
+const BG_DARK_ON = 0.6;
+const BG_DARK_OFF = 0.4;
+
+/** 背景亮度 + 近黑占比 → 文字色/描边适配（CPU 路径由主进程推送，GPU 路径由 WebGL 模块回传） */
+function applyBrightness(b, darkRatio) {
   if (typeof b !== 'number') return;
   // 文字颜色滞回：亮背景（>0.62）→ 深色文字；暗背景（<0.48）→ 白色文字；中间区间保持原样
   if (inkDark) {
@@ -700,14 +733,18 @@ function applyBrightness(b) {
     inkDark = true;
   }
   document.body.dataset.ink = inkDark ? 'dark' : 'light';
-  // 无效果模式：仅在背景「几乎全黑」（亮度 < 0.15）时加细白边；
-  // 滞回：退出阈值 0.25，防止亮度在阈值附近时白边闪烁
-  if (b < 0.15) bgDark = true;
-  else if (b > 0.25) bgDark = false;
+  if (typeof darkRatio === 'number') {
+    if (darkRatio >= BG_DARK_ON) bgDark = true;
+    else if (darkRatio <= BG_DARK_OFF) bgDark = false;
+  } else {
+    // 兜底（拿不到占比）：按平均亮度 + 滞回，行为与旧版一致
+    if (b < 0.15) bgDark = true;
+    else if (b > 0.25) bgDark = false;
+  }
   document.body.dataset.bg = bgDark ? 'dark' : 'light';
 }
 
-window.island.onBrightness((data) => applyBrightness(data && data.brightness));
+window.island.onBrightness((data) => applyBrightness(data && data.brightness, data && data.darkRatio));
 
 /* ---------- 倒计时计算 ---------- */
 
@@ -867,6 +904,8 @@ function setWxEffect(kind) {
   fx.innerHTML = Array.from({ length: n }, (_x, i) => `<i style="--i:${i}"></i>`).join('');
 }
 
+let lastStripSig = ''; // 上一次写进 #content 的细条签名（内容 + 窗口尺寸）：一致就不重建 DOM（防入场动画重播）
+let lastRenderState = ''; // 上一次 render 的形态（细条签名只在"上一帧也是细条"时可信）
 let shownPrimaryId = null; // 当前 DOM 展示的事件 id（轮播切换检测用）
 let shownUnit = ''; // 当前主时间单位（跨单位时需重建 DOM 以增删副行节点）
 
@@ -898,8 +937,20 @@ function measureStripSize() {
   } catch (e) { /* 量不出来不影响显示 */ }
 }
 
+/** 细条写 DOM：签名一致就不写 —— 节点不换，入场动画就不会重播（文字不再莫名闪一下）。
+    签名 = 内容 HTML + 窗口尺寸：尺寸变了必须重建。重建会清掉上一轮「兜底裁切」留在节点上的
+    maxWidth，让两瓣按新几何重量一次；只比内容会把旧的裁切状态一直留着（实测右瓣被压成 0）。
+    只在「上一帧也是细条」时才信任签名：大窗口/通知/计时坞往 #content 写过东西之后签名失效。 */
+function writeStrip(box, html, prevRenderState) {
+  const sig = html + '|' + window.innerWidth + 'x' + window.innerHeight;
+  if (sig !== lastStripSig || prevRenderState !== 'strip') box.innerHTML = html;
+  lastStripSig = sig;
+}
+
 function render() {
   const box = $('#content');
+  const prevRenderState = lastRenderState;
+  lastRenderState = state;
   // 离开计时坞就清掉它的页面标识（否则样式会残留在其它形态上）
   if (state !== 'dock') document.body.dataset.dockPage = '';
   // 细条/横幅：渲染完把内容宽度报上去。
@@ -935,12 +986,12 @@ function render() {
       shownUnit = '';
       const sL = `<span class="s-watch">${stopwatchSvg()}</span>`;
       const sR = `<span class="s-num s-timer" data-timer-num>${fmtTimer(timer.leftMs)}</span>`;
-      box.innerHTML = `<div class="s-row">${notchRow(sL, sR)}</div>`;
+      writeStrip(box, `<div class="s-row">${notchRow(sL, sR)}</div>`, prevRenderState);
       return;
     }
     // 细条：没有计时时间（无有效事件）时只显示纯黑胶囊，不渲染任何内容
     if (!info) {
-      box.innerHTML = '';
+      writeStrip(box, '', prevRenderState);
       return;
     }
     const { primary, units, past } = info;
@@ -954,7 +1005,7 @@ function render() {
     const sLeft = evName ? `<span class="s-name" title="${ESC(evName)}">${ESC(evName)}</span>` : `<span class="s-name s-noicon"></span>`;
     const sRight = `<span class="s-num" data-role="days">${past ? t('已过') : units.num}</span>${past ? '' : `<span class="s-unit" data-role="unit">${t(units.unit)}</span>`}`;
     // 天气常驻：紧凑 chip 挂在细条右缘（绝对定位，不参与整行居中 → 两瓣与禁区的相对位置不变）
-    box.innerHTML = `<div class="s-row">${notchRow(sLeft, sRight)}</div>${wxChipHtml()}`;
+    writeStrip(box, `<div class="s-row">${notchRow(sLeft, sRight)}</div>${wxChipHtml()}`, prevRenderState);
     return;
   }
 

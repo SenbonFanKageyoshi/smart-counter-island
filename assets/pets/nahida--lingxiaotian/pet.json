@@ -1,0 +1,18 @@
+{
+  "name": "纳西妲",
+  "author": "legeling",
+  "license": "CC BY-NC 4.0",
+  "source": "https://github.com/legeling/awesome-codex-pet",
+  "scale": 55,
+  "anchorY": 0,
+  "fps": 6,
+  "states": {
+    "idle": { "fps": 6, "sheet": "spritesheet.webp", "frames": 6, "cols": 8, "cells": 72, "start": 0 },
+    "walk": { "fps": 8, "sheet": "spritesheet.webp", "frames": 8, "cols": 8, "cells": 72, "start": 8 },
+    "talk": { "fps": 7, "sheet": "spritesheet.webp", "frames": 4, "cols": 8, "cells": 72, "start": 24 },
+    "jump": { "fps": 7, "sheet": "spritesheet.webp", "frames": 5, "cols": 8, "cells": 72, "start": 32 },
+    "fail": { "fps": 7, "sheet": "spritesheet.webp", "frames": 8, "cols": 8, "cells": 72, "start": 40 },
+    "sleep": { "fps": 6, "sheet": "spritesheet.webp", "frames": 6, "cols": 8, "cells": 72, "start": 48 },
+    "review": { "fps": 6, "sheet": "spritesheet.webp", "frames": 6, "cols": 8, "cells": 72, "start": 64 }
+  }
+}

@@ -51,7 +51,7 @@ let tray = null;
 let trayTimer = null;
 let trayClicked = false;
 let wallpaper = null; // 壁纸功能（懒创建）
-let pet = null;       // 桌宠（懒创建）
+let pet = null;       // 教学助手（懒创建）
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -144,7 +144,7 @@ async function main() {
       console.error('[tasks] 检查失败:', e.message);
     }
     try {
-      // 课堂提醒：通知弹窗 + 桌宠出面念一遍（桌宠未启用时 announce 内部会跳过）
+      // 课堂提醒：通知弹窗 + 教学助手出面念一遍（教学助手未启用时 announce 内部会跳过）
       tasks.checkClassReminders(new Date(), (r) => {
         island.showNotification(r.title, r.body, { alert: true, keywords: ['上课', '下课'] });
         if (pet) pet.announce(r);
@@ -167,7 +167,7 @@ async function main() {
     }
   }, 20000);
 
-  // —— 桌宠：独立舞台窗口 + 行为拍（每秒一次）+ 环境同步（全屏授课 / 上课中 / 免打扰）——
+  // —— 教学助手：独立舞台窗口 + 行为拍（每秒一次）+ 环境同步（全屏授课 / 上课中 / 免打扰）——
   pet = new Pet(settings, probe);
   registerPetIpc(pet);
   pet.applySettings();
@@ -1798,7 +1798,7 @@ function registerIpc() {
   ipcMain.handle('config:update', (_e, patch) => {
     const next = settings.update(patch);
     island.applySettings();
-    if (pet) pet.applySettings(); // 桌宠开关/尺寸/透明度即时生效
+    if (pet) pet.applySettings(); // 教学助手开关/尺寸/透明度即时生效
     applyAutoStart(); // 开机自启变化即时生效
     if (patch && patch.weather) {
       // 天气设置变化：先按新配置推一次状态（城市/显示/动画开关立刻见效），启用后异步拉数据
@@ -1814,7 +1814,7 @@ function registerIpc() {
     return next;
   });
 
-  // 桌宠：状态自检（配置页显示用）
+  // 教学助手：状态自检（配置页显示用）
   ipcMain.handle('pet:status', async () => {
     if (!pet) return { enabled: false };
     const st = settings.load();
@@ -1833,7 +1833,7 @@ function registerIpc() {
       scheduleEnabled: !!(st.schedule && st.schedule.enabled),
     };
   });
-  ipcMain.handle('pet:check-ai', async () => (pet ? pet.checkConnection() : { ok: false, reason: '桌宠未初始化' }));
+  ipcMain.handle('pet:check-ai', async () => (pet ? pet.checkConnection() : { ok: false, reason: '教学助手未初始化' }));
   ipcMain.handle('pet:test-say', async () => {
     if (pet) pet.say('你好，我是班级小助手，课间可以来找我聊天～', { alert: false });
     return true;
@@ -3201,7 +3201,7 @@ function runTests() {
       island.animating = false;
       await sleep(600);
 
-      // —— T28 桌宠素材包（目录 + pet.json → 渲染层帧；三种写法都支持）——
+      // —— T28 教学助手素材包（目录 + pet.json → 渲染层帧；三种写法都支持）——
       const packMod = require('./pet-pack');
       const tmpPack = path.join(os.tmpdir(), `sci-pet-pack-${process.pid}`);
       fs.rmSync(tmpPack, { recursive: true, force: true });
@@ -3264,7 +3264,7 @@ function runTests() {
       settings.update({ pet: { enabled: false, pack: '' } });
       await sleep(200);
 
-      // —— T26 桌宠大脑与 AI 层（纯逻辑，不碰窗口/网络）——
+      // —— T26 教学助手大脑与 AI 层（纯逻辑，不碰窗口/网络）——
       const brain = require('./pet-brain');
       const aiMod = require('./ai');
       ok(
@@ -3274,8 +3274,47 @@ function runTests() {
           brain.decidePetAction({ talking: true }).action === 'talk' &&
           brain.decidePetAction({ sinceInteractMs: 10 * 60 * 1000 }).action === 'sleep'
       );
-      const actSeq = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000].map((s) => brain.decidePetAction({ seed: s, cfg: { walkSec: 3, idleSec: 3 } }).action);
-      ok(`T26 走动/发呆交替且可复现 (${actSeq.join(',')})`, actSeq.includes('walk') && actSeq.includes('idle') && brain.decidePetAction({ seed: 7 }).action === brain.decidePetAction({ seed: 7 }).action);
+      // 新行为语义：带持续时长（一段内不换）、走完必接发呆、睡觉只在久无互动时
+      const sim26 = (() => {
+        let st = null;
+        const segs = [];
+        let walkSec = 0;
+        let walkDirStable = true;
+        for (let t = 0; t < 600; t++) {
+          const d = brain.nextAction({ now: t * 1000, seed: 4242 + t, sinceInteractMs: 0, cfg: {} }, st);
+          if (!st || st.action !== d.action) segs.push(d.action);
+          if (d.action === 'walk') {
+            walkSec += 1;
+            if (st && st.action === 'walk' && st.dir !== d.dir) walkDirStable = false;
+          }
+          st = { action: d.action, dir: d.dir, until: d.until };
+        }
+        const count = (a) => segs.filter((x) => x === a).length;
+        return { segs, walkPct: Math.round((walkSec / 600) * 100), walkDirStable, idle: count('idle'), walk: count('walk'), sleep: count('sleep') };
+      })();
+      ok(
+        'T26 行为状态机：走动占比 ' + sim26.walkPct + '% / 段数 发呆' + sim26.idle + ' 走' + sim26.walk + ' / 方向段内不变=' + sim26.walkDirStable + ' / 随机睡觉=' + sim26.sleep,
+        sim26.walkPct >= 10 && sim26.walkPct <= 32 && sim26.idle >= 5 && sim26.walk >= 2 && sim26.walkDirStable === true && sim26.sleep === 0
+      );
+      const hold26 = brain.nextAction({ now: 0, seed: 3, sinceInteractMs: 0, cfg: {} }, null);
+      ok(
+        'T26 一段行为有持续时长（' + hold26.action + ' 持续 ' + (hold26.until - 0) + 'ms；until 前不换）',
+        hold26.until > 1500 && brain.nextAction({ now: 500, seed: 99, sinceInteractMs: 0, cfg: {} }, hold26).action === hold26.action
+      );
+      let pickSleep26 = 0;
+      for (let s = 0; s < 400; s += 1) if (brain.pickWeighted({}, s) === 'sleep') pickSleep26 += 1;
+      ok('T26 睡觉不参与随机抽签（400 次抽签抽到 sleep ' + pickSleep26 + ' 次）', pickSleep26 === 0);
+      // 同一个 seed → 同一个决策（可复现）；不同 seed 下的加权抽签只应出现 idle/walk/talk
+      const picks26 = [];
+      for (let s = 0; s < 60; s += 1) picks26.push(brain.decidePetAction({ now: 0, seed: s, cfg: {} }).action);
+      const uniq26 = Array.from(new Set(picks26)).sort().join(',');
+      ok(
+        'T26 行为可复现且只在常态动作里抽签 (' + uniq26 + '；seed7 两次=' + brain.decidePetAction({ now: 0, seed: 7 }).action + '/' + brain.decidePetAction({ now: 0, seed: 7 }).action + ')',
+        brain.decidePetAction({ now: 0, seed: 7 }).action === brain.decidePetAction({ now: 0, seed: 7 }).action &&
+          picks26.every((a) => a === 'idle' || a === 'walk' || a === 'talk') &&
+          picks26.includes('idle') &&
+          picks26.includes('walk')
+      );
       ok(
         `T26 开口规则 (上课问作业→${brain.canPetSpeak({ inClass: true, question: '这题怎么做' }).mode}，上课问课表→${brain.canPetSpeak({ inClass: true, question: '下节课是什么', aiReady: true, quotaLeftMin: 5, quotaLeftDay: 5 }).mode}，无 key→${brain.canPetSpeak({ question: '作业交到哪', aiReady: false }).mode}，超额→${brain.canPetSpeak({ question: '你好', aiReady: true, quotaLeftMin: 0, quotaLeftDay: 5 }).mode})`,
         brain.canPetSpeak({ inClass: true, question: '这题怎么做' }).mode === 'refuse' &&
@@ -3315,11 +3354,16 @@ function runTests() {
           (aiMod.parseSseLine('data: [DONE]') || {}).done === true
       );
 
-      // —— T27 桌宠窗口与问答链路（真实窗口 + 打桩的 AI 流）——
+      // —— T27 教学助手窗口与问答链路（真实窗口 + 打桩的 AI 流）——
       settings.update({ schedule: { enabled: false } }); // 先确保"不在上课时间"，避免闲聊被静默规则拦掉
+      // 显式用「示例素材包」当夹具：逐像素命中要探舞台正中那一点，必须用几何可控的素材，
+      // 不能依赖随包默认素材（默认现在是纳西妲，它那一帧正中有可能是透明区）。
+      const tmpPack27 = path.join(os.tmpdir(), 'sci-pet-t27-' + process.pid);
+      packMod.ensureSamplePack(tmpPack27);
       settings.update({
         pet: {
           enabled: true,
+          pack: tmpPack27,
           scale: 100,
           speed: 100,
           opacity: 0.9,
@@ -3339,14 +3383,20 @@ function runTests() {
         return pw.webContents.executeJavaScript(`(() => { const s = window.__petState ? window.__petState() : null; return s ? { w: s.w, h: s.h, x: s.x, y: s.y, action: s.action, center: s.alphaAt(s.x, s.y - 6), corner: s.alphaAt(4, 4), hitCenter: s.hitAt(s.x, s.y - 6), hitCorner: s.hitAt(4, 4) } : null; })()`);
       })();
       ok(
-        `T27 桌宠窗口：透明置顶 + 舞台内移动 (窗口=${pw && !pw.isDestroyed() ? 'ok' : '无'}，置顶=${pw && pw.isAlwaysOnTop()}，舞台=${petWin && petWin.w}/${petWin && petWin.h}，位置=${petWin && petWin.x},${petWin && petWin.y})`,
+        `T27 教学助手窗口：透明置顶 + 舞台内移动 (窗口=${pw && !pw.isDestroyed() ? 'ok' : '无'}，置顶=${pw && pw.isAlwaysOnTop()}，舞台=${petWin && petWin.w}/${petWin && petWin.h}，位置=${petWin && petWin.x},${petWin && petWin.y})`,
         !!petWin && !!pw && pw.isAlwaysOnTop() && petWin.w > 200 && petWin.h > 150 && petWin.x > 0 && petWin.y > 0
       );
       ok(
         `T27 逐像素命中（身上可点、空白穿透）：身上 alpha=${petWin && petWin.center}（命中=${petWin && petWin.hitCenter}），角落 alpha=${petWin && petWin.corner}（命中=${petWin && petWin.hitCorner}）`,
         !!petWin && petWin.center > 25 && petWin.hitCenter === true && petWin.corner <= 25 && petWin.hitCorner === false
       );
-      // 舞台平移 + 位置持久化（先让桌宠进入上课静默，免得它自己走动把平移量搅乱）
+      // 安静模式：自检时教学助手窗口必须不可见 —— 它按设置改透明度（applySettings → setOpacity），
+      // 以前这一步会把 quiet 设的 0 覆盖掉，跑一次自检用户的屏幕上就冒出教学助手。
+      ok(
+        `T27 自检时教学助手窗口不可见（quiet 未被透明度设置覆盖） (opacity=${pw.getOpacity()} 可见=${pw.isVisible()})`,
+        pw.getOpacity() === 0
+      );
+      // 舞台平移 + 位置持久化（先让教学助手进入上课静默，免得它自己走动把平移量搅乱）
       pet.envSource = () => ({ inClass: true, fullscreen: false, dnd: false });
       pet.sinceInteract = Date.now();
       pet.tick();
@@ -3441,23 +3491,88 @@ function runTests() {
       const askClass27 = await pet.ask('讲个笑话吧');
       pet.envSource = () => ({ inClass: false, fullscreen: false, dnd: false });
       ok(`T27 上课时间拒绝闲聊 (mode=${askClass27 && askClass27.mode})`, askClass27 && askClass27.mode === 'refuse');
-      // 课堂提醒联动：桌宠出面念一遍
+      // 课堂提醒联动：教学助手出面念一遍
       const before27 = await pw.webContents.executeJavaScript(`window.__petState().text`);
       pet.announce({ title: '上课', body: '上课时间到 · 第 3 节 数学' });
       await sleep(300);
       const after27 = await pw.webContents.executeJavaScript(`window.__petState().text`);
       ok(
-        `T27 课堂提醒由桌宠播报 (前=${JSON.stringify(String(before27).slice(0, 8))} → 后=${JSON.stringify(String(after27).slice(0, 12))})`,
+        `T27 课堂提醒由教学助手播报 (前=${JSON.stringify(String(before27).slice(0, 8))} → 后=${JSON.stringify(String(after27).slice(0, 12))})`,
         String(after27).indexOf('上课时间到') >= 0
       );
-      // 关闭桌宠：窗口隐藏
+      // 关闭教学助手：窗口隐藏
       settings.update({ pet: { enabled: false } });
       pet.applySettings();
       await sleep(400);
       ok(`T27 关闭后窗口隐藏 (可见=${pw.isVisible()})`, pw.isVisible() === false);
       pet.envSource = null; // 交还给主进程的自动环境同步
-      settings.update({ pet: { enabled: false, x: null, y: null, ai: { apiKey: '' }, qa: [] } });
+      settings.update({ pet: { enabled: false, pack: '', x: null, y: null, ai: { apiKey: '' }, qa: [] } });
       await sleep(200);
+
+      // —— T43 行为系统（重做后）：帧真的推进 / 活动范围按精灵尺寸 / 瞬态反应 ——
+      {
+        const keep43 = JSON.parse(JSON.stringify(settings.load().pet || {}));
+        try {
+          settings.update({ pet: { enabled: true, pack: '', scale: 100, speed: 100, opacity: 0.9 } }); // pack 空 = 内置纳西妲
+          if (pet) pet.applySettings();
+          const pw43 = pet && pet.win;
+          const read43 = () =>
+            pw43 && !pw43.isDestroyed()
+              ? pw43.webContents.executeJavaScript(
+                  "(function(){var s=window.__petState?window.__petState():null;if(!s)return null;return {using:s.usingSprite,counts:s.spriteCounts||{},frame:s.frame,action:s.action,half:s.half,box:s.box,x:s.x,y:s.y,w:s.w,react:s.react};})()"
+                )
+              : null;
+          let s43 = null;
+          const ddl43 = Date.now() + 10000;
+          while (Date.now() < ddl43) {
+            s43 = await read43();
+            if (s43 && s43.using && s43.counts && s43.counts.idle > 1) break;
+            await sleep(200);
+          }
+          ok(
+            'T43 图集素材的每个动作都有多帧（idle=' + (s43 && s43.counts.idle) + ' walk=' + (s43 && s43.counts.walk) + ' jump=' + (s43 && s43.counts.jump) + ' review=' + (s43 && s43.counts.review) + ' fail=' + (s43 && s43.counts.fail) + '）',
+            !!s43 && s43.using === true && s43.counts.idle === 6 && s43.counts.walk === 8 && s43.counts.talk === 4 && s43.counts.jump === 5 && s43.counts.review === 6 && s43.counts.fail === 8
+          );
+          // 帧推进：以前精灵图永远停在第 0 帧（frames.length>1 才推进）
+          const frames43 = [];
+          for (let i = 0; i < 6; i += 1) {
+            const cur = await read43();
+            if (cur) frames43.push(cur.frame);
+            await sleep(400);
+          }
+          ok(
+            'T43 精灵图的帧真的在推进（采样 ' + JSON.stringify(frames43) + ' → 不同帧 ' + new Set(frames43).size + ' 个）',
+            new Set(frames43).size >= 2
+          );
+          // 活动范围按精灵实际宽度（旧版写死 pad=30 → 宽素材半身出界）
+          ok(
+            'T43 活动半宽按精灵尺寸（half=' + (s43 && s43.half) + ' box=' + JSON.stringify(s43 && s43.box) + ' 旧版固定 30）',
+            !!s43 && s43.half > 30 && s43.half === Math.round(s43.box.w / 2) + 4 && s43.x >= s43.half && s43.x <= s43.w - s43.half
+          );
+          // 点击 → 跳一下（瞬态反应），随后自动撤销
+          const jump43 = await pw43.webContents.executeJavaScript(
+            "(function(){var s=window.__petState();var halfH=Math.round(s.box.h/2);var halfW=Math.round(s.box.w/2);var found=null;for(var dy=-halfH;dy<=0&&!found;dy+=5){for(var dx=-halfW;dx<=halfW;dx+=5){if(s.hitAt(s.x+dx,s.y+dy)){found={x:s.x+dx,y:s.y+dy};break;}}}if(!found)return {ok:false,reason:'找不到不透明点'};window.dispatchEvent(new MouseEvent('mousedown',{clientX:found.x,clientY:found.y,screenX:500,screenY:500}));window.dispatchEvent(new MouseEvent('mouseup',{clientX:found.x,clientY:found.y,screenX:500,screenY:500}));return {ok:true,react:window.__petState().react};})()"
+          );
+          // 瞬态反应按**真实时间**到期（1100ms），而 --test-fast 会把 sleep 按比例缩短 ——
+          // 所以这里轮询到撤销为止，不能按固定 sleep 断言
+          let cleared43 = 'jump';
+          const ddlReact43 = Date.now() + 5000;
+          while (Date.now() < ddlReact43) {
+            const cur43 = await read43();
+            cleared43 = cur43 ? cur43.react : '';
+            if (cleared43 === '') break;
+            await sleep(200);
+          }
+          ok(
+            'T43 点击→跳一下（react=' + (jump43 && jump43.react) + ' 随后撤销=' + cleared43 + ' 原因=' + (jump43 && jump43.reason) + '）',
+            !!jump43 && jump43.ok === true && jump43.react === 'jump' && cleared43 === ''
+          );
+        } finally {
+          settings.update({ pet: keep43 });
+          if (pet) pet.applySettings();
+          await sleep(200);
+        }
+      }
 
       // —— T25 课表统一模型 + 课堂提醒（由时间表自动驱动）——
       const schedMod = require('./schedule');
@@ -5967,6 +6082,283 @@ function runTests() {
         }
       }
 
+      // —— T39 细条不再莫名闪字 + 大窗口玻璃特效第一次就到位 ——
+      // 1) 入场动画（sci-content-in）以前挂在 #content > * 上：细条每次 render 都整块重建 DOM，
+      //    节点一换动画就重播（0.3s 淡入 + 上移 4px）→ 文字莫名闪一下。现在只在形态切换时挂
+      //    .in-anim，并且细条内容签名没变就不重建 DOM。
+      // 2) 玻璃「等新图」门：applyBoundsNow（立即改尺寸、无动画）以前也发动画结束信号 → 渲染层
+      //    进入等新图，而这条路径不抓新图 → 玻璃最长空 800ms（靠兜底定时器才回来）。用户恰好
+      //    那一刻进大窗口，看到的就是「要调整两次才有玻璃特效」。
+      {
+        const keep39 = {
+          events: JSON.parse(JSON.stringify(settings.load().events || [])),
+          glassMode: settings.load().ui.glassMode,
+          stripStyle: settings.load().ui.stripStyle,
+        };
+        const readContent39 = () =>
+          island.win.webContents.executeJavaScript(
+            "(function(){var c=document.getElementById('content');var r=document.querySelector('#content > .s-row');return {has:!!r,same:!!r&&r===window.__srow39,inAnim:c.classList.contains('in-anim'),state:document.body.dataset.state};})()"
+          );
+        const readGlass39 = () =>
+          island.win.webContents.executeJavaScript(
+            "(function(){var g=document.getElementById('glass');var f=g.style.filter||'';return {state:document.body.dataset.state,display:getComputedStyle(g).display,lg:f.indexOf('lg-filter')>=0,f:f.slice(0,22),bgLen:(g.style.backgroundImage||'').length};})()"
+          );
+        try {
+          settings.update({
+            events: [{ id: 'ev-t39', name: '闪烁复现', date: mkDate(3 * 86400000), emoji: '⏳', color: '#4f7cff', enabled: true, pinned: false }],
+            ui: { glassMode: 'liquid', stripStyle: 'black' },
+          });
+          island.glassFailed = false;
+          island.applySettings();
+          island.manualState('strip', 60000);
+          island.animating = false;
+          await sleep(900);
+          const c39a = await readContent39();
+          // 细条宽度自适应是异步链路（量 → 报 → 双确认 → 改尺寸 → 重量）：收敛过程中尺寸每变一次
+          // 都**应该**重建 DOM（重建会清掉上一轮兜底裁切留下的 maxWidth），那不是本断言的对象。
+          // 这里反复重试到尺寸稳定为止，再验「同一尺寸下重复推状态不重建」。
+          let c39b = { same: false, widthSame: false, inAnim: true };
+          const ddlW39 = Date.now() + 9000;
+          while (Date.now() < ddlW39) {
+            await island.win.webContents.executeJavaScript("window.__srow39=document.querySelector('#content > .s-row')||null;window.__w39=window.innerWidth;true");
+            for (let i = 0; i < 5; i++) { island.sendState(); await sleep(110); }
+            c39b = await island.win.webContents.executeJavaScript("(function(){var r=document.querySelector('#content > .s-row');return {same:!!r&&r===window.__srow39,widthSame:window.innerWidth===window.__w39,inAnim:document.getElementById('content').classList.contains('in-anim')};})()");
+            if (c39b.same === true) break;
+            await sleep(400);
+          }
+          ok('T39 细条重复推状态不重建 DOM（有内容=' + c39a.has + ' 同一节点=' + c39b.same + ' 尺寸未变=' + c39b.widthSame + '）', c39a.has === true && c39b.same === true);
+          ok('T39 状态不变不挂入场动画（in-anim=' + c39b.inAnim + '）', c39b.inAnim === false);
+          island.manualState('expanded', 15000);
+          await sleep(70);
+          const inOn39 = (await readContent39()).inAnim;
+          // 切换瞬间必须挂上；之后只要「仍处于大窗口」就必须摘掉。不用固定单点判断：
+          // 切换初期 tick 可能把状态拉回再进，那也算一次形态切换，动画本来就该重播。
+          let off39 = false;
+          const seen39 = [];
+          const ddlIn39 = Date.now() + 2500;
+          while (Date.now() < ddlIn39) {
+            const s39i = await readContent39();
+            seen39.push(s39i.state + (s39i.inAnim ? '+anim' : ''));
+            if (s39i.state === 'expanded' && s39i.inAnim === false) { off39 = true; break; }
+            await sleep(90);
+          }
+          ok('T39 形态切换才播入场动画（切换瞬间=' + inOn39 + ' 摘掉=' + off39 + ' 轨迹=' + seen39.join('>') + '）', inOn39 === true && off39 === true);
+          let g39 = await readGlass39();
+          const ddl39 = Date.now() + 9000;
+          while ((g39.display !== 'block' || !g39.lg || !(g39.bgLen > 0)) && Date.now() < ddl39) { await sleep(120); g39 = await readGlass39(); }
+          ok('T39 大窗口首次进入即挂液态滤镜 (state=' + g39.state + ' display=' + g39.display + ' filter=' + g39.f + ' bg=' + g39.bgLen + 'B)', g39.state === 'expanded' && g39.display === 'block' && g39.lg === true && g39.bgLen > 0);
+          const b39 = island.win.getBounds();
+          island.animating = false;
+          island.applyBoundsNow({ x: b39.x, y: b39.y, width: b39.width + 2, height: b39.height });
+          let hidden39 = 0;
+          for (let i = 0; i < 8; i++) { const s39 = await readGlass39(); if (s39.display !== 'block') hidden39 += 1; await sleep(60); }
+          ok('T39 立即改尺寸不进入「等新图」（隐藏帧=' + hidden39 + '）', hidden39 === 0);
+        } finally {
+          settings.update({ events: keep39.events, ui: { glassMode: keep39.glassMode, stripStyle: keep39.stripStyle } });
+          island.applySettings();
+        }
+      }
+
+      // —— T40 白边跟随背景明暗：前台窗口一变就立刻补一次亮度采样 ——
+      // 实测一次截屏 ~175ms（成本在采集服务、与缩略图大小无关），所以白边的响应**不能靠提高采样
+      // 频率**（细条 ×1.6 倍率下是 2.56s 一次，提到 500ms 等于让采集管线 1/3 时间在抓屏）。
+      // 只能事件触发：切 PPT / 切应用 / 回桌面 —— 这正是白边最该迅速响应的场景。
+      {
+        const realCapture40 = island.captureOnce;
+        const keepMode40 = settings.load().ui.glassMode;
+        let cap40 = 0;
+        try {
+          settings.update({ ui: { glassMode: 'fake' } }); // GPU 模式不补采（亮度由渲染层算）
+          island.captureOnce = async () => { cap40 += 1; };
+          island.animating = false;
+          island.paused = false;
+          island.dragging = false;
+          island.lastFgKey = 'seed|none'; // 假装上一个前台窗口
+          island.lastFgCapAt = 0;
+          island.tick();
+          const afterChange40 = cap40;
+          island.tick(); // 前台没变 → 不许再抓
+          const sameFg40 = cap40 - afterChange40;
+          // 800ms 内再换前台也不许补采：一次截屏 ~175ms，密集切换会与 GPU 连续取流抢 DXGI
+          island.lastFgKey = 'seed2|none';
+          island.tick();
+          const throttled40 = cap40 - afterChange40 - sameFg40;
+          ok(
+            'T40 前台窗口一变就补采亮度（切换后=' + afterChange40 + ' 次，同前台再 tick=' + sameFg40 + ' 次，800ms 内再切换=' + throttled40 + ' 次）',
+            afterChange40 === 1 && sameFg40 === 0 && throttled40 === 0
+          );
+          island.lastFgKey = undefined;
+          cap40 = 0;
+          island.lastFgCapAt = 0;
+          island.tick();
+          ok('T40 首帧只记基线、不补采（=' + cap40 + ' 次）', cap40 === 0);
+          const keepGl40 = { fallback: island.glFallback, failed: island.glassFailed };
+          island.glFallback = false;
+          island.glassFailed = false;
+          settings.update({ ui: { glassMode: 'webgl' } });
+          island.lastFgKey = 'seed3|none';
+          island.lastFgCapAt = 0;
+          cap40 = 0;
+          island.tick();
+          const gpuSkip40 = cap40;
+          island.glFallback = keepGl40.fallback;
+          island.glassFailed = keepGl40.failed;
+          ok('T40 GPU 玻璃模式不补采（=' + gpuSkip40 + ' 次，亮度由渲染层算）', gpuSkip40 === 0);
+        } finally {
+          island.captureOnce = realCapture40;
+          settings.update({ ui: { glassMode: keepMode40 } });
+        }
+      }
+
+      // —— T41 背景感知只看「胶囊那块」+ 白边改看近黑占比 ——
+      // 1) 采样区域以前是**整个窗口**（含四周 PAD 的透明留白），边缘那圈背景会把平均值稀释掉；
+      //    现在只取胶囊（矩形由 pillSize 给，与窗口尺寸同源）。
+      // 2) 白边判据从「平均亮度 < 0.15」改成「近黑像素占比 ≥ 0.6（撤 0.4）」：
+      //    小岛压在明暗交界处时平均值会卡在滞回带里不动，占比才回答得了"这块背景是不是大部分黑"。
+      {
+        const disp41 = island.islandDisplay();
+        // 假窗口要装得下任意形态的胶囊（大窗口 420×97），否则"胶囊在窗口内"这条会假失败
+        const win41 = { x: 100, y: 50, width: 1000, height: 500 };
+        const pill41 = island.pillRectOnScreen(win41, disp41);
+        const s41 = island.pillSize(island.state, disp41);
+        ok(
+          'T41 亮度只采胶囊那块（窗口 ' + win41.width + 'x' + win41.height + ' → 胶囊 ' + pill41.w + 'x' + pill41.h + ' @' + pill41.x + ',' + pill41.y + '）',
+          pill41.x === win41.x + 8 && pill41.y === win41.y + 8 && pill41.w === Math.round(s41.w) && pill41.h === Math.round(s41.h) && pill41.w < win41.width
+        );
+        const mk41 = (w, h, fn) => {
+          const a = new Uint8Array(w * h * 4);
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const i = (y * w + x) * 4;
+              const c = fn(x, y);
+              a[i] = c[2];
+              a[i + 1] = c[1];
+              a[i + 2] = c[0];
+              a[i + 3] = 255;
+            }
+          }
+          return a;
+        };
+        const rect41 = { x: 0, y: 0, w: 64, h: 64 };
+        const org41 = { x: 0, y: 0 };
+        const st41 = (fn) => island.sampleRectStats(mk41(64, 64, fn), 64, 64, rect41, org41, 1, 1);
+        const black41 = st41(() => [0, 0, 0]);
+        const white41 = st41(() => [255, 255, 255]);
+        const half41 = st41((x) => (x < 32 ? [0, 0, 0] : [255, 255, 255]));
+        const mostly41 = st41((x) => (x < 45 ? [6, 6, 6] : [255, 255, 255]));
+        ok(
+          'T41 全黑 → 判暗（亮度=' + black41.brightness.toFixed(3) + ' 近黑占比=' + black41.darkRatio.toFixed(2) + '）',
+          black41.brightness < 0.02 && black41.darkRatio === 1
+        );
+        ok(
+          'T41 全白 → 判亮（亮度=' + white41.brightness.toFixed(3) + ' 近黑占比=' + white41.darkRatio.toFixed(2) + '）',
+          white41.brightness > 0.98 && white41.darkRatio === 0
+        );
+        ok(
+          'T41 明暗各半 → 落在滞回带（亮度=' + half41.brightness.toFixed(3) + ' 近黑占比=' + half41.darkRatio.toFixed(2) + '）',
+          Math.abs(half41.brightness - 0.5) < 0.03 && Math.abs(half41.darkRatio - 0.5) < 0.03
+        );
+        ok(
+          'T41 七成近黑但平均不暗 → 新判据仍判暗（亮度=' + mostly41.brightness.toFixed(3) + ' 近黑占比=' + mostly41.darkRatio.toFixed(2) + '）',
+          mostly41.brightness > 0.3 && mostly41.darkRatio > 0.65
+        );
+      }
+
+      // —— T42 教学助手：包格式扩展（start/cells）+ 内置纳西妲 + 素材库清单 ——
+      // 1) 一张图集放多个动作：sheet 加 start（起始格）与 cells（总格数，算行数用）。
+      // 2) 内置素材只放纳西妲（CC BY-NC 4.0，署名 legeling）；其余 257 个按需下载
+      //    （258 个共约 500MB，且有 33 个没标再分发许可 → 不随安装包公开分发）。
+      {
+        const packMod42 = require('./pet-pack');
+        const libMod42 = require('./pet-library');
+        const builtin42 = packMod42.bundledDefaultPack();
+        ok('T42 内置素材包随包可读（' + (builtin42 || '无') + '）', !!builtin42 && /nahida/.test(builtin42));
+        const rd42 = builtin42 ? packMod42.readPack(builtin42) : { ok: false, states: {} };
+        const st42 = rd42.states || {};
+        ok(
+          'T42 图集行映射：idle/walk/talk/sleep 起始格 = 0/8/24/48，总格数 72（' +
+            ['idle', 'walk', 'talk', 'sleep'].map((k) => k + ':' + (st42[k] ? st42[k].start + '+' + st42[k].count : '无')).join(' ') + '）',
+          !!rd42.ok && !!st42.idle && !!st42.walk && !!st42.talk && !!st42.sleep &&
+            st42.idle.start === 0 && st42.walk.start === 8 && st42.talk.start === 24 && st42.sleep.start === 48 &&
+            st42.idle.cells === 72 && st42.walk.cols === 8
+        );
+        ok('T42 署名随包带出（作者=' + rd42.author + ' 许可=' + rd42.license + '）', rd42.author === 'legeling' && /CC BY-NC/.test(String(rd42.license)));
+        ok('T42 默认素材包优先用内置', packMod42.defaultPackDir(require('os').tmpdir()) === builtin42);
+        const cat42 = libMod42.readCatalog();
+        const rows42 = libMod42.mergeList(cat42, {});
+        const nahida42 = rows42.find((r) => r.id === 'nahida--lingxiaotian');
+        ok(
+          'T42 素材清单（' + cat42.count + ' 条，源 ' + cat42.source + '）且纳西妲在列' + (nahida42 ? '（' + nahida42.name + '）' : ''),
+          cat42.count >= 250 && !!nahida42 && /CC BY-NC/.test(String(nahida42.license)) && rows42.length === cat42.count
+        );
+        const m1 = libMod42.packManifest({ id: 'x', version: 1 });
+        const m2 = libMod42.packManifest({ id: 'y', version: 2 });
+        const good42 = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(16)]);
+        const bad42 = Buffer.from('这不是图集');
+        ok(
+          'T42 下载校验与转换（v1 格数=' + m1.states.idle.cells + ' v2 格数=' + m2.states.idle.cells + ' 好图=' + libMod42.verifyBuffer(good42, {}).ok + ' 坏图=' + libMod42.verifyBuffer(bad42, {}).ok + ' 源数=' + libMod42.assetUrls({ id: 'z' }).length + '）',
+          m1.states.idle.cells === 72 && m2.states.idle.cells === 88 && m2.states.talk.start === 24 &&
+            libMod42.verifyBuffer(good42, {}).ok === true && libMod42.verifyBuffer(bad42, {}).ok === false &&
+            libMod42.verifyBuffer(good42, { sha256: 'deadbeef' }).ok === false &&
+            libMod42.assetUrls({ id: 'z' }).length >= 6 &&
+            libMod42.assetUrls({ id: 'z' }).some((u) => u.includes('jsdelivr')) &&
+            libMod42.assetUrls({ id: 'z' }).some((u) => u.includes('ghproxy')) &&
+            typeof libMod42.httpFetch === 'function'
+        );
+        // 端到端：把内置图集在渲染层解出来，按 pet.json 的 start 逐格采样 ——
+        // 确认每个状态的第一帧真的落在「有内容」的格子上（行映射/格数换算的最终验证）。
+        const atlas42 = await island.win.webContents.executeJavaScript(
+          "(async function(){var img=new Image();img.src='../../../assets/pets/nahida--lingxiaotian/spritesheet.webp';await img.decode();var c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;var g=c.getContext('2d');g.drawImage(img,0,0);var CW=192,CH=208;var op=function(r,col){var d=g.getImageData(col*CW,r*CH,CW,CH).data;var n=0;for(var i=3;i<d.length;i+=4){if(d[i]>24)n++;}return n;};return {size:img.naturalWidth+'x'+img.naturalHeight,idle:op(0,0),walk:op(1,0),talk:op(3,0),sleep:op(6,0),idleCol7:op(0,7),talkCol4:op(3,4)};})()"
+        );
+        ok(
+          'T42 内置图集端到端（' + atlas42.size + ' idle=' + atlas42.idle + ' walk=' + atlas42.walk + ' talk=' + atlas42.talk + ' sleep=' + atlas42.sleep + ' 空位=' + atlas42.idleCol7 + '/' + atlas42.talkCol4 + '）',
+          atlas42.size === '1536x1872' &&
+            atlas42.idle > 1000 && atlas42.walk > 1000 && atlas42.talk > 1000 && atlas42.sleep > 1000 &&
+            atlas42.idleCol7 === 0 && atlas42.talkCol4 === 0
+        );
+        // 配置页素材库列表真的渲染出来了（走 IPC → 主进程清单 → DOM）
+        try {
+          config.open();
+          let cw42 = null;
+          const ddlCw42 = Date.now() + 9000;
+          while (Date.now() < ddlCw42) {
+            cw42 = config.getWindow();
+            if (cw42 && !cw42.webContents.isLoading()) {
+              const ready42 = await cw42.webContents.executeJavaScript("document.querySelectorAll('#petLibList .lib-row').length");
+              if (ready42 > 0) break;
+            }
+            await sleep(200);
+          }
+          const dom42 = cw42
+            ? await cw42.webContents.executeJavaScript(
+                "(function(){var rows=document.querySelectorAll('#petLibList .lib-row');var p=document.getElementById('petLibProgress');var on=document.querySelectorAll('#petLibList .lib-row.on').length;return {rows:rows.length,on:on,txt:p?String(p.textContent).slice(0,50):'',first:rows.length?String(rows[0].textContent).slice(0,36):''};})()"
+              )
+            : null;
+          ok(
+            'T42 配置页素材库列表渲染（行数=' + (dom42 && dom42.rows) + ' 已装=' + (dom42 && dom42.on) + ' 首行=' + JSON.stringify(dom42 && dom42.first) + '）',
+            !!dom42 && dom42.rows >= 250 && dom42.on >= 1 && /素材库共/.test(String(dom42.txt))
+          );
+        } catch (e) {
+          ok('T42 配置页素材库列表渲染（异常：' + String((e && e.message) || e).slice(0, 60) + '）', false);
+        }
+      }
+
+      /** 自检收尾：先停采集、关掉各窗口再退出。
+          以前直接 app.exit() —— 它跳过 before-quit，采集会话来不及释放；实测这样会把系统的
+          DXGI 桌面复制留在坏状态：之后**任何**进程截图都从启动就失败，并掉到 670~930ms 的慢路径
+          （正常 ~175ms），GPU 玻璃那几条断言（T18/T21/T22/T23）跟着全红。 */
+      const finishTest = async (code) => {
+        try { island.stopGlass(); } catch (e) { /* ignore */ }
+        const ddlQuit = Date.now() + 2000;
+        while (island.capturing && Date.now() < ddlQuit) await sleep(50); // 等在飞的截屏收尾
+        try { island.destroy(); } catch (e) { /* ignore */ }
+        try { if (pet) pet.destroy(); } catch (e) { /* ignore */ }
+        try { config.close(); } catch (e) { /* ignore */ }
+        try { require('./glass-lab').close(); } catch (e) { /* ignore */ }
+        await sleep(250); // 给采集/合成服务一点时间释放会话
+        app.exit(code);
+      };
+
       const failed = results.some(([c]) => !c);
       const verdict = failed ? 'TEST_FAIL' : 'TEST_OK';
       console.log(verdict);
@@ -5976,7 +6368,7 @@ function runTests() {
       } catch (e) {
         /* ignore */
       }
-      app.exit(failed ? 1 : 0);
+      await finishTest(failed ? 1 : 0);
     } catch (e) {
       const msg = e && e.stack ? e.stack : String(e);
       console.error('TEST_ERROR', msg);
@@ -5986,6 +6378,11 @@ function runTests() {
       } catch (err) {
         /* ignore */
       }
+      // 异常路径也别硬杀进程（见 finishTest 的说明：硬杀会把采集会话留在坏状态）
+      try { island.stopGlass(); } catch (err) { /* ignore */ }
+      const ddlErr = Date.now() + 1500;
+      while (island.capturing && Date.now() < ddlErr) await sleep(50);
+      await sleep(200);
       app.exit(1);
     }
   })();

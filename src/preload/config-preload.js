@@ -39,6 +39,15 @@ contextBridge.exposeInMainWorld('config', {
     packSample: () => ipcRenderer.invoke('pet:pack-sample'),
     packReload: () => ipcRenderer.invoke('pet:pack-reload'),
     packPick: () => ipcRenderer.invoke('pet:pack-pick'),
+    // 素材库：清单 / 下载 / 使用 / 删除 / 全量下载 / 进度
+    libList: () => ipcRenderer.invoke('pet:lib-list'),
+    libUse: (id) => ipcRenderer.invoke('pet:lib-use', id),
+    libDownload: (id) => ipcRenderer.invoke('pet:lib-download', id),
+    libDownloadAll: () => ipcRenderer.invoke('pet:lib-all'),
+    libCancel: () => ipcRenderer.invoke('pet:lib-cancel'),
+    libRemove: (id) => ipcRenderer.invoke('pet:lib-remove', id),
+    libOpenDir: () => ipcRenderer.invoke('pet:lib-open'),
+    onLibProgress: (cb) => ipcRenderer.on('pet:lib-progress', (_e, d) => cb(d)),
   },
   // 天气：状态 / 手动刷新 / 一键定位 / 城市解析预览 / 试一条提醒
   weather: {

@@ -1,7 +1,7 @@
 'use strict';
-/* 桌宠渲染层
+/* 教学助手渲染层
    - 舞台内 60fps 自由移动（窗口几乎不动，只有走到边缘才请主进程平移一格）
-   - 逐像素命中：1/2 分辨率遮罩画布读 alpha，只有指针落在桌宠/气泡上才接收鼠标
+   - 逐像素命中：1/2 分辨率遮罩画布读 alpha，只有指针落在教学助手/气泡上才接收鼠标
    - 美术：默认内置占位小人（几何图形）；配了素材包则按帧序列绘制（见 drawSprite）
    - 行为：idle / walk / sleep / talk / quiet 由主进程 pet-brain 每秒下发 */
 
@@ -32,9 +32,12 @@ const P = {
   blinking: false,
   talking: false,
   scale: 1,
+  packScale: 100, // 素材包自带比例（100 = 原始像素大小；像素图集靠它声明"我本来就大"）
   inClass: false,
   sprites: null, // 素材包：{ 状态: { frames:[Image], fps, sheet:{count,cols}|null } }（null = 用占位小人）
   frame: 0,
+  lastAction: '',   // 上一帧显示的动作（换动作时把帧重置到 0）
+  react: null,      // 瞬态反应 { action, until }：点击→jump、提问中→review、答错/断网→fail
   lastTs: 0,     // 上一帧时间戳（按真实时间步进，帧率无关）
   restUntil: 0,  // 转身/撞墙后的停顿截止时间（performance.now()）
 };
@@ -51,8 +54,11 @@ function resize() {
     P.x = P.w * 0.5;
     P.y = P.h - 56;
   }
-  P.x = Math.max(28, Math.min(P.x, P.w - 28));
-  P.y = Math.max(48, Math.min(P.y, P.h - 30));
+  const box = spriteBox();
+  const half = Math.max(8, box.w / 2) + 4;
+  P.half = half;
+  P.x = Math.max(half, Math.min(P.x, P.w - half));
+  P.y = Math.max(box.h + 8, Math.min(P.y, P.h - 8));
 }
 
 window.addEventListener('resize', resize);
@@ -75,14 +81,65 @@ function overBubble(x, y) {
 
 /* ---------------- 绘制 ---------------- */
 
+/** 当前有效的瞬态反应（到点即失效）。
+    ⚠️ 不能只在帧循环里撤销：窗口被遮挡时 rAF 会被节流/暂停，react 会一直挂在那里
+    （实测自检里 1.6s 后仍是 jump）—— 这里按"使用时刻"判过期，读一次就顺手清掉。 */
+function activeReact() {
+  if (!P.react) return '';
+  // 用墙钟 Date.now()：渲染进程被冻结时 performance.now() 会停住（正好在"窗口被遮挡"时发生），
+  // 那样瞬态反应会永远挂在那里（实测自检里 1.6s 后仍是 jump）。
+  if (Date.now() >= P.react.until) {
+    P.react = null;
+    return '';
+  }
+  return P.react.action;
+}
+
+/** 这段动画一共多少帧：精灵图看 cells/count，帧序列看图片数。
+    ⚠️ 精灵图的 s.frames 只有 **1 张图**（帧在图上按格切）——旧代码用 frames.length > 1 判断能否推进，
+    于是图集素材永远停在第 0 帧，看起来就是"一直是同一帧"。 */
+function frameCountOf(s) {
+  if (!s) return 0;
+  if (s.sheet) return Math.max(1, s.sheet.count || 1);
+  return s.frames ? s.frames.length : 0;
+}
+
+/** 当前素材的实际显示尺寸（px）：用于把活动范围按"精灵本身"而不是固定 30px 来算，
+    否则宽素材（如 192×208 一格的图集）会有一半身子走出画布/屏幕。 */
+function spriteBox() {
+  const sp = currentSprite();
+  const sc = spriteScale();
+  if (!sp) return { w: 64 * sc, h: 64 * sc };
+  const s = sp.s;
+  const nw = sp.img.naturalWidth;
+  const nh = sp.img.naturalHeight;
+  if (s.sheet) {
+    const cols = Math.max(1, s.sheet.cols || 1);
+    const rows = Math.max(1, Math.ceil((s.sheet.cells || s.sheet.count || 1) / cols));
+    return { w: (nw / cols) * sc, h: (nh / rows) * sc };
+  }
+  return { w: nw * sc, h: nh * sc };
+}
+
 /** 取当前状态该用的素材帧（帧序列 / 精灵图 / 动图）；没有素材返回 null → 回落占位小人 */
 function currentSprite() {
   if (!P.sprites) return null;
-  const s = P.sprites[P.action] || (P.action === 'quiet' ? P.sprites.idle : null) || P.sprites.idle;
+  // 瞬态反应（点击→跳 / 思考→审视 / 答错→失败）优先显示，缺这一行就回落常态动作
+  const react = activeReact();
+  const act = (react && P.sprites[react] ? react : null) || P.action;
+  const s = P.sprites[act] || (act === 'quiet' ? P.sprites.idle : null) || P.sprites.idle;
   if (!s || !s.frames || !s.frames.length) return null;
   const img = s.frames[P.frame % s.frames.length];
   if (!img || !img.complete || !img.naturalWidth) return null;
   return { s, img };
+}
+
+/** 有效缩放 = 用户设置的大小 × 素材包自带比例（packScale）。
+    一条 192×208 一格的像素图集比内置 64×64 占位小人大得多，靠 packScale 声明自带比例，
+    用户就不用为了换素材去手动改大小。 */
+function spriteScale() {
+  const k = typeof P.packScale === 'number' && P.packScale > 0 ? P.packScale : 100;
+  return P.scale * (k / 100);
 }
 
 function drawSprite(g, scale, sp) {
@@ -90,15 +147,18 @@ function drawSprite(g, scale, sp) {
   const cols = s.sheet ? s.sheet.cols : 1;
   const count = s.sheet ? s.sheet.count : 1;
   const fw = s.sheet ? img.naturalWidth / cols : img.naturalWidth;
-  const rows = s.sheet ? Math.max(1, Math.ceil(count / cols)) : 1;
+  const rows = s.sheet ? Math.max(1, Math.ceil((s.sheet && s.sheet.cells ? s.sheet.cells : count) / cols)) : 1;
   const fh = s.sheet ? img.naturalHeight / rows : img.naturalHeight;
-  const idx = s.sheet ? P.frame % count : 0;
+  // start = 本动作在图集里的第一格（一张图集放多个动作时用）；cells = 总格数（算行数用）
+  const start = s.sheet && s.sheet.start ? s.sheet.start : 0;
+  const idx = s.sheet ? start + (P.frame % count) : 0;
   const sx = s.sheet ? (idx % cols) * fw : 0;
   const sy = s.sheet ? Math.floor(idx / cols) * fh : 0;
-  const w = fw * P.scale;
-  const h = fh * P.scale;
+  const sc = spriteScale();
+  const w = fw * sc;
+  const h = fh * sc;
   const x = P.x - w / 2;
-  const y = P.y - h + (P.anchorY || 0) * P.scale;
+  const y = P.y - h + (P.anchorY || 0) * sc;
   g.save();
   g.scale(1 / scale, 1 / scale);
   if (P.dir < 0) {
@@ -114,7 +174,7 @@ function drawPlaceholder(g, scale) {
   g.save();
   g.scale(1 / scale, 1 / scale);
   const { x, y } = P;
-  const sc = P.scale;
+  const sc = spriteScale();
   const bob = P.action === 'walk' ? Math.sin(P.t / 8) * 1.6 * sc : Math.sin(P.t / 22) * 0.8 * sc;
   const swing = P.action === 'walk' ? Math.sin(P.t / 7) * 9 * sc : 0;
   const eye = P.action === 'sleep' ? 0.14 : P.blinking ? 0.16 : 1;
@@ -194,12 +254,24 @@ function frame() {
   P.t++;
   if (P.t % 150 === 0) P.blinking = true;
   if (P.t % 150 === 9) P.blinking = false;
-  // 帧推进：按当前状态的 fps（没有素材时不推进）
+  // 活动半宽每帧跟着"当前素材"重算：素材/动作一换尺寸就变（旧值会让边界算错）
+  P.half = Math.max(8, spriteBox().w / 2) + 4;
+  // 帧推进：按当前状态的 fps（精灵图按格数推进，不是按图片数）
   if (P.sprites) {
-    const s = P.sprites[P.action] || (P.action === 'quiet' ? P.sprites.idle : null) || P.sprites.idle;
-    if (s && s.frames && s.frames.length > 1) {
-      const fps = s.fps || 8;
-      if (P.t % Math.max(1, Math.round(60 / fps)) === 0) P.frame = (P.frame + 1) % s.frames.length;
+    const react = activeReact();
+    const act = (react && P.sprites[react] ? react : null) || P.action;
+    const s = P.sprites[act] || (act === 'quiet' ? P.sprites.idle : null) || P.sprites.idle;
+    const total = frameCountOf(s);
+    // 换动作/段动画：从第一帧开始（否则 talk 会从 idle 的中间帧切进去）
+    if (P.lastAction !== act) {
+      P.lastAction = act;
+      P.frame = 0;
+    }
+    if (total > 1) {
+      const fps = Math.max(1, Math.min(30, (s && s.fps) || 8));
+      if (P.t % Math.max(1, Math.round(60 / fps)) === 0) P.frame = (P.frame + 1) % total;
+    } else if (P.frame) {
+      P.frame = 0;
     }
   }
 
@@ -211,13 +283,14 @@ function frame() {
     const dt = Math.min(80, Math.max(0, now - P.lastTs)); // 窗口被挂起后别一次跳很远
     P.lastTs = now;
     P.x += ((P.speed * 48 * P.dir * dt) / 1000);
-    const pad = 30;
-    if (P.x < pad) {
+    // 活动范围按**精灵实际宽度**算（+4px 余量）：固定 30px 会让宽素材半身出画布/屏幕
+    const half = P.half || Math.max(8, spriteBox().w / 2) + 4;
+    if (P.x < half) {
       P.dir = 1;
-      requestShift(-120, 0, pad - P.x);
-    } else if (P.x > P.w - pad) {
+      requestShift(-120, 0, half - P.x);
+    } else if (P.x > P.w - half) {
       P.dir = -1;
-      requestShift(120, 0, P.x - (P.w - pad));
+      requestShift(120, 0, P.x - (P.w - half));
     }
   } else if (P.action === 'walk') {
     // 转身/撞墙后的短暂停顿（自然一点，也避免贴边抖动）
@@ -309,6 +382,7 @@ window.addEventListener('mouseup', (e) => {
   const wasDrag = drag && drag.moved;
   drag = null;
   if (!wasDrag && alphaAt(e.clientX, e.clientY) > 25) {
+    P.react = { action: 'jump', until: Date.now() + 1100 }; // 被戳一下：跳一下
     window.pet.interact();
     toggleBubble();
   }
@@ -414,6 +488,7 @@ window.pet.onAskStart(() => {
   metaEl.textContent = '';
   dots.classList.add('on');
   P.talking = true;
+  P.react = { action: 'review', until: Date.now() + 6000 }; // 思考中：审视
   toggleBubble(true);
 });
 
@@ -428,6 +503,7 @@ window.pet.onAskEnd((d) => {
     if (!textEl.textContent) textEl.textContent = '（连接失败）';
     metaEl.textContent = (d && d.error) || '';
     P.talking = false;
+    P.react = { action: 'fail', until: Date.now() + 2200 }; // 答错/断网：失败动作
     return;
   }
   textEl.textContent = d.text || textEl.textContent;
@@ -445,7 +521,7 @@ window.addEventListener('keydown', (e) => {
 resize();
 requestAnimationFrame(frame);
 
-// 自检/诊断钩子（主进程 --test 用）：读桌宠实时状态与逐像素命中
+// 自检/诊断钩子（主进程 --test 用）：读教学助手实时状态与逐像素命中
 window.__petState = () => ({
   ready: true,
   x: Math.round(P.x),
@@ -462,6 +538,14 @@ window.__petState = () => ({
   spriteStates: P.sprites ? Object.keys(P.sprites) : [],
   spriteFrames: P.sprites ? Object.fromEntries(Object.entries(P.sprites).map(([k, v]) => [k, (v.frames || []).length])) : {},
   frame: P.frame,
+  dir: P.dir,
+  half: Math.round(P.half || 0), // 舞台内活动半宽（按精灵实际宽度算；旧版写死 30）
+  box: (() => { const b = spriteBox(); return { w: Math.round(b.w), h: Math.round(b.h) }; })(),
+  react: activeReact(), // 瞬态反应（点击→jump / 思考→review / 答错→fail）
+  // 每个动作一共有多少帧（精灵图看 cells，帧序列看图片数）——"一直是同一帧"的回归钉子
+  spriteCounts: P.sprites
+    ? Object.fromEntries(Object.entries(P.sprites).map(([k, v]) => [k, v.sheet ? (v.sheet.count || 1) : (v.frames || []).length]))
+    : {},
   alphaAt: (x, y) => alphaAt(x, y),
   hitAt: (x, y) => alphaAt(x, y) > 25,
 });

@@ -1,5 +1,5 @@
 'use strict';
-/* 桌宠素材包：目录 + pet.json 清单 → 主进程读成 data URL 交给渲染层。
+/* 教学助手素材包：目录 + pet.json 清单 → 主进程读成 data URL 交给渲染层。
    支持三种写法（可混用）：
      1) 帧序列：{ "fps": 6, "frames": ["idle_1.png", "idle_2.png"] }
      2) 精灵图：{ "fps": 10, "sheet": "walk.png", "frames": 6, "cols": 6 }   // 从左到右按格切
@@ -12,11 +12,13 @@ const path = require('path');
 
 const PACK_FILE = 'pet.json';
 const IMG_EXT = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg'];
-const STATE_NAMES = ['idle', 'walk', 'sleep', 'talk', 'quiet']; // quiet 缺省回落到 idle
+// 素材包支持的状态（缺哪个就回落到 idle）；
+// jump/review/fail 是瞬态反应：被点击跳一下 / 思考中审视 / 答错断网失败
+const STATE_NAMES = ['idle', 'walk', 'sleep', 'talk', 'quiet', 'jump', 'review', 'fail'];
 
 /** 素材包内的说明文件（老师照着改即可） */
 const PACK_README = [
-  '桌宠素材包说明',
+  '教学助手素材包说明',
   '================',
   '',
   '这个文件夹里放两样东西：pet.json（清单）+ 图片文件。程序按清单把图切成帧来播放。',
@@ -27,6 +29,9 @@ const PACK_README = [
   '  sleep  久无人互动时睡觉',
   '  talk   说话中',
   '  quiet  上课时间静默站立（可省，省了用 idle）',
+  '  jump   被点击时跳一下（可省）',
+  '  review 正在思考/等待回答（可省）',
+  '  fail   回答失败/断网（可省）',
   '',
   '【三种写法，可以混用】',
   '',
@@ -36,6 +41,12 @@ const PACK_README = [
   '2) 精灵图（一张长图切成 N 格，最省文件、最推荐）：',
   '   "walk": { "fps": 10, "sheet": "walk.png", "frames": 6, "cols": 6 }',
   '   // frames = 总帧数，cols = 每行几格；图片按「从左到右、从上到下」切',
+  '',
+  '   一张图集里放多个动作时，再加两个可选字段：',
+  '   "idle": { "fps": 6, "sheet": "all.webp", "frames": 6, "cols": 8, "cells": 72, "start": 0 }',
+  '   "walk": { "fps": 8, "sheet": "all.webp", "frames": 8, "cols": 8, "cells": 72, "start": 8 }',
+  '   // cells = 图集总格数（用它算行数），start = 本动作第一格的序号（0 基）',
+  '   // 内置的「纳西妲」就是这种：1536×1872 的 8×9 图集，一行一个动作（见 assets/pets/）',
   '',
   '3) 动图（GIF / 动态 WebP，浏览器自己播）：',
   '   "idle": { "file": "idle.webp", "fps": 12 }',
@@ -59,13 +70,24 @@ const PACK_README = [
   '  · 注意版权：微信表情包、动漫/游戏角色（原神、宝可梦等）都有版权，教室里公开使用有风险；',
   '    商用素材站（如爱给网、CraftPix）要看清授权条款；不确定就用 CC0 或自己画。',
   '',
-  '改完图后在「配置 → 桌宠 → 素材包」点「重新加载」立即生效。',
+  '改完图后在「配置 → 教学助手 → 素材包」点「重新加载」立即生效。',
   '',
 ].join('\r\n');
 
-/** 素材包默认目录：<userData>/pets/示例 */
+/** 随安装包发行的内置素材包目录（src/main → ../../assets/pets） */
+function bundledPetsDir() {
+  return path.join(__dirname, '..', '..', 'assets', 'pets');
+}
+
+/** 内置首选素材包目录（纳西妲）；没打包/被删掉时返回 null */
+function bundledDefaultPack() {
+  const dir = path.join(bundledPetsDir(), 'nahida--lingxiaotian');
+  return fs.existsSync(path.join(dir, PACK_FILE)) ? dir : null;
+}
+
+/** 素材包默认目录：内置素材优先（开箱就有人形），否则 <userData>/pets/示例 */
 function defaultPackDir(userDataDir) {
-  return path.join(userDataDir, 'pets', '示例');
+  return bundledDefaultPack() || path.join(userDataDir, 'pets', '示例');
 }
 
 function isImage(file) {
@@ -74,7 +96,7 @@ function isImage(file) {
 
 /** 归一化单个状态的写法 → { fps, files:[], sheet, count, cols } */
 function normalizeState(def, defaultFps) {
-  const out = { fps: Math.max(1, Math.min(30, parseInt(defaultFps, 10) || 6)), files: [], sheet: '', count: 0, cols: 0, kind: '' };
+  const out = { fps: Math.max(1, Math.min(30, parseInt(defaultFps, 10) || 6)), files: [], sheet: '', count: 0, cols: 0, start: 0, cells: 0, kind: '' };
   if (!def) return out;
   if (typeof def === 'string') {
     if (!isImage(def)) return out;
@@ -100,6 +122,11 @@ function normalizeState(def, defaultFps) {
     out.sheet = def.sheet;
     out.count = Math.max(1, Math.min(120, parseInt(def.frames, 10) || 1));
     out.cols = Math.max(1, Math.min(60, parseInt(def.cols, 10) || out.count));
+    // 起始格 + 总格数：一张图集放多个动作时用（如 Codex 宠物 1536×1872 的 8×9 图集，一行一个动作）。
+    // cells = 图集总格数（用来算行数，缺省按 start+count 估），start = 本动作第一格的序号（0 基）。
+    out.start = Math.max(0, Math.min(9999, parseInt(def.start, 10) || 0));
+    const cellsRaw = parseInt(def.cells, 10);
+    out.cells = Math.max(out.start + out.count, Math.min(9999, Number.isFinite(cellsRaw) ? cellsRaw : 0));
     return out;
   }
   const arr = Array.isArray(def.frames) ? def.frames.filter(isImage) : [];
@@ -117,10 +144,14 @@ function parseManifest(json, existsFn) {
   const j = json && typeof json === 'object' ? json : {};
   const out = {
     ok: false,
-    name: String(j.name || '未命名桌宠').slice(0, 30),
+    name: String(j.name || '未命名教学助手').slice(0, 30),
     scale: Math.max(30, Math.min(300, parseInt(j.scale, 10) || 100)),
     anchorY: Math.max(-200, Math.min(200, parseInt(j.anchorY, 10) || 0)),
     fps: Math.max(1, Math.min(30, parseInt(j.fps, 10) || 6)),
+    // 署名信息：素材库列表要显示作者与许可，这里原样透传（本项目的功能不依赖它们）
+    author: String(j.author || '').slice(0, 60),
+    license: String(j.license || '').slice(0, 80),
+    source: String(j.source || '').slice(0, 200),
     states: {},
     errors,
   };
@@ -197,9 +228,9 @@ function packToPayload(dir, maxBytesPerFile) {
       }
     }
     if (!urls.length) continue;
-    states[name] = { fps: st.fps, frames: urls, sheet: st.kind === 'sheet' ? { count: st.count, cols: st.cols } : null };
+    states[name] = { fps: st.fps, frames: urls, sheet: st.kind === 'sheet' ? { count: st.count, cols: st.cols, start: st.start || 0, cells: st.cells || st.start + st.count || st.count } : null };
   }
-  return { ok: !!states.idle, name: p.name, scale: p.scale, anchorY: p.anchorY, states, errors, dir, summary: p.summary };
+  return { ok: !!states.idle, name: p.name, scale: p.scale, anchorY: p.anchorY, author: p.author, license: p.license, source: p.source, states, errors, dir, summary: p.summary };
 }
 
 /** 内置示例素材包：纯 SVG 帧（ASCII 内容），用来验证管线、也给老师当模板 */
@@ -270,7 +301,7 @@ function ensureSamplePack(dir) {
     scale: 100,
     anchorY: 0,
     fps: 4,
-    note: '把 idle_*.svg 换成你自己的图即可：帧序列 / 精灵图 / 动图三种写法见 README「桌宠素材包」',
+    note: '把 idle_*.svg 换成你自己的图即可：帧序列 / 精灵图 / 动图三种写法见 README「教学助手素材包」',
     states,
   };
   const mf = path.join(dir, PACK_FILE);
@@ -302,6 +333,8 @@ module.exports = {
   IMG_EXT,
   STATE_NAMES,
   defaultPackDir,
+  bundledPetsDir,
+  bundledDefaultPack,
   isImage,
   normalizeState,
   parseManifest,
