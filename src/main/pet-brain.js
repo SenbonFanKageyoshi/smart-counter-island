@@ -75,7 +75,9 @@ function pickWeighted(weights, seed) {
 function nextAction(input, state) {
   const i = input || {};
   const cfg = i.cfg || {};
-  const now = Number(i.now) || 0;
+  // ⚠️ 兜底取当前时间：调用方漏传 now 时 until 会算成「0+时长」（远古时间戳）→
+  // 「一段行为持续时长」彻底失效、每秒重掷（实测 brainState.until=7153 就是这么来的）。
+  const now = Number(i.now) || Date.now();
   const seed = Number(i.seed) || 0;
   const cur = state && state.action && state.until ? state : null;
   const prevDir = cur && cur.dir ? cur.dir : 0;
@@ -87,7 +89,8 @@ function nextAction(input, state) {
   if (i.fail) return makeChoice('fail', now, seed, prevDir);
   if (i.talking) return makeChoice('talk', now, seed, 0);
   if (i.perch) return makeChoice('perch', now, seed, 0); // 趴到小岛倒计时上（趴着也是安静的，上课也允许）
-  if (i.inClass) return makeChoice('quiet', now, seed, 0);
+  // ⚠️ 上课时间不再直接返回 quiet 站住：配置页那句是「只答课表与倒计时」（不闲聊、不打扰），
+  // 不是「不许走动」。照常发呆/走动，只是不主动说话（说话由 canPetSpeak 管）。
 
   // 2) 久无人互动 → 睡觉
   const sleepSec = Math.max(10, Number(cfg.sleepSec) || 300);

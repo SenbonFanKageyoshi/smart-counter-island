@@ -342,6 +342,7 @@ class Pet {
     // 带状态的决策：until 之前保持同一行为（旧版每秒重掷 → 看着乱动、忽左忽右）
     const decided = brain.nextAction(
       {
+        now, // 必须传：否则 until 会算成 0+时长，持续时长失效（见 pet-brain 注释）
         hidden: false,
         fullscreen: false,
         inClass,
